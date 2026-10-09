@@ -14,6 +14,7 @@ use crate::util::order_utils::should_apply_status_transition;
 use mostro_core::prelude::{Action, Message, Payload, SmallOrder, UserInfo};
 use nostr_sdk::prelude::PublicKey;
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 /// Apply a successful `user-info` fetch when it still matches the live session.
 ///
@@ -552,6 +553,13 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             }
             app.observer_loading = false;
             app.observer_error = None;
+            // Replace after zeroizing any previous attachment keys.
+            for msg in &mut app.observer_messages {
+                msg.content.zeroize();
+                if let Some(att) = msg.attachment.as_mut() {
+                    att.zeroize_secrets();
+                }
+            }
             app.observer_messages = messages;
             return;
         }

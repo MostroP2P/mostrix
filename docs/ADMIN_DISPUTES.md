@@ -71,12 +71,13 @@ The interface is divided into three main sections:
      - Grows automatically based on content
      - Yellow bold border when focused
      - Text wrapping with word boundaries
-   - **Command bar (one row)**: High-contrast keycaps aligned with My Trades — **COMMAND** shows `i Write · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy`; **INSERT** shows `Enter Send · Esc Commands · Ctrl+K Actions · …`. Width truncates whole key/label groups. Party, filter, and file hints sit on the **chat border** (`title_bottom`).
+   - **Command bar (one row)**: High-contrast keycaps aligned with My Trades — **COMMAND** shows `i Write · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy`; **INSERT** shows `Enter Send · Esc Commands · Ctrl+K Actions · …`. On **SERBERO** the bar is read-only (`Tab Party · Ctrl+K Actions · …` — no Write/Send). Width **skips** groups that do not fit and keeps later shorter ones. Party, filter, and file hints sit on the **chat border** (`title_bottom`).
 
 #### Dispute Management Features
 
 - **Real-time chat**: Direct typing with instant visual feedback
-- **Party switching**: Tab key toggles between buyer and seller
+- **Party switching**: Tab key cycles BUYER → SELLER → SERBERO; clears any unsent composer draft (same idea as My Trades channel switch)
+- **Draft ownership**: `admin_chat_draft_owner: Option<(dispute_id, ChatParty)>` — Enter send validates the draft belongs to the live dispute/party (`prepare_admin_chat_edit` / `resolve_admin_chat_send_target` in `chat_helpers.rs`). ↑↓ dispute change, Tab pane change, and filter toggle clear an unowned draft so text typed for Buyer A cannot be sent to Seller B or another dispute
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
 - **Selection safety**: chat send, Shift+F finalize, Ctrl+S save-attachment, and chat scroll all call `selected_filtered_dispute` so messages are encrypted to the shared key of the dispute the sidebar highlights (avoids silently targeting a closed dispute sorted above an open one by `taken_at DESC`)
@@ -85,14 +86,14 @@ The interface is divided into three main sections:
 
 #### Keyboard Navigation
 
-- **Up/Down**: Select dispute in sidebar (moves within the filtered list; viewport scrolls to keep selection visible)
-- **Tab / Shift+Tab**: Cycle panes BUYER → SELLER → SERBERO (assistant messages, read-only)
-- **i / Insert**: Enter **INSERT** (type message; capitals OK). **Esc** leaves INSERT → **COMMAND** (draft kept)
-- **Enter**: Send message (when INSERT and input has text)
-- **Ctrl+K**: Dispute actions popup (Resolve / Recover / Filter / Remove); letter jump + Enter. Works in INSERT and COMMAND
+- **Up/Down**: Select dispute in sidebar (moves within the filtered list; viewport scrolls to keep selection visible; clears unsent draft when the dispute changes)
+- **Tab / Shift+Tab**: Cycle panes BUYER → SELLER → SERBERO (assistant messages, read-only; clears draft; forces COMMAND on SERBERO)
+- **i / Insert**: Enter **INSERT** on BUYER/SELLER only (not SERBERO). **Esc** leaves INSERT → **COMMAND** (draft kept for the same dispute/party)
+- **Enter**: Send message (when INSERT and input has text; ownership must match live target)
+- **Ctrl+K**: Dispute actions popup (Resolve / Recover / Filter / Remove). Pins the selected **dispute id** at open so a list refresh cannot retarget Resolve/Remove. **↑↓ or letter** moves the highlight; **Enter** confirms (letters do not execute). Works in INSERT and COMMAND
 - **Shift+F**: Open finalization popup (COMMAND only; also via Ctrl+K → F)
 - **Shift+R**: Recover missing taken disputes (COMMAND only; also via Ctrl+K → R)
-- **Shift+C**: Toggle In Progress / Finalized filter (COMMAND only; also via Ctrl+K → C)
+- **Shift+C**: Toggle In Progress / Finalized filter (COMMAND only; also via Ctrl+K → C; clears draft)
 - **Delete**: Remove selected dispute from local DB (COMMAND only; also via Ctrl+K → D)
 - **Ctrl+T**: Take over a dispute Serbero handed off or is mediating (also on Disputes Pending); see below
 - **PageUp/PageDown**: Scroll chat history (or the SERBERO pane)
@@ -137,19 +138,19 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
      - Parse attachments (Mostro Mobile Encrypted File Messaging format: `image_encrypted` / `file_encrypted`).
    - The chat is displayed using the same rich formatting as the dispute chat: color-coded sender labels (Cyan=Admin, Green=Buyer, Magenta=Seller), timestamps, and attachment indicators.
 5. **Save attachments**:
-   - Press **Ctrl+S** to open a save-attachment popup listing all file/image attachments found in the observer chat. Select with **Up/Down**, save with **Enter**, cancel with **Esc**. Files are saved to `~/.mostrix/downloads/observer_<key_prefix>_<filename>`.
+   - Press **Ctrl+S** to open a save-attachment popup listing all file/image attachments found in the observer chat. Select with **Up/Down**, save with **Enter**, cancel with **Esc**. Decrypt uses the **pinned loaded** `K_conv` (`observer_loaded_shared_key`), not the editable Shared key field. Files are saved to `~/.mostrix/downloads/observer_<key_prefix>_<filename>`. Editing the Shared key field after Load **invalidates** the transcript (messages + attachment keys wiped) so a mistyped field cannot decrypt with the wrong key.
 
 #### Observer Keyboard Shortcuts
 
-- **Enter**: Fetch chat from relays using the Shared key, or copy the selected message during copy selection.
-- **Ctrl+L**: **Clear** all — Shared key, messages, error, and loading (when no popup is open). Sensitive data is securely cleared with `zeroize`; pending fetch results are invalidated. Keycap label is **Clear** (not Esc).
-- **Ctrl+K**: Observer actions popup (Clear all / Save attachment / Dismiss error); letter jump + Enter.
+- **Enter**: Fetch chat from relays using the Shared key, or copy the selected message during copy selection. Load pins `observer_loaded_shared_key` for attachment decrypt.
+- **Ctrl+L**: **Clear** all — Shared key, loaded pin, messages (including attachment `decryption_key` bytes via `ChatAttachment::zeroize_secrets`), error, and loading (when no popup is open). Pending fetch results are invalidated. Keycap label is **Clear** (not Esc).
+- **Ctrl+K**: Observer actions popup (Clear all / Save attachment / Dismiss error). **↑↓ or letter** moves the highlight; **Enter** confirms (letter `L` does **not** wipe secrets by itself).
 - **Ctrl+C**: Select the first displayed message in a loaded conversation. Up/Down extend the highlighted range, Enter copies it, and Esc cancels without changing the Shared key.
 - **Esc**: **Dismiss** the inline Observer error only (does not wipe Shared key or messages). Shown as `Esc Dismiss` on the chat border when an error is present.
 - **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat); also via Ctrl+K → S.
 - **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
 
-The Observer command bar is one row of keycaps: `Enter Load · Ctrl+L Clear · Ctrl+H Help · Ctrl+K Actions · Ctrl+C Copy` (width-truncated). Paste/scroll (and Save file when attachments exist) sit on the chat border.
+The Observer command bar is one row of keycaps. At normal widths: `Enter Load · Ctrl+L Clear · Ctrl+H Help · Ctrl+K Actions · Ctrl+C Copy`. On very narrow terminals (&lt;36 cols) Help/Actions/Clear are ordered first so they stay discoverable. Groups that do not fit are **skipped** (later shorter groups may still appear). Paste/scroll (and Save file when attachments exist) sit on the chat border.
 
 During copy selection, other shortcuts are suspended except **Ctrl+L**, which also
 cancels selection. Clearing Observer only wipes application state, not text
@@ -161,17 +162,19 @@ When validation or fetching fails (empty key, invalid hex, no messages found, de
 
 #### Observer State (AppState)
 
-- `observer_shared_key_input: String` -- disclosed Shared key (`K_conv`) hex.
-- `observer_messages: Vec<DisputeChatMessage>` -- fetched and decrypted chat messages.
+- `observer_shared_key_input: String` -- editable Shared key (`K_conv`) hex field.
+- `observer_loaded_shared_key: String` -- `K_conv` pinned at Load for attachment decrypt; cleared on Clear or when the field diverges from the loaded value.
+- `observer_messages: Vec<DisputeChatMessage>` -- fetched and decrypted chat messages (attachment keys zeroized on Clear/replace).
 - `observer_loading: bool` -- indicates an async fetch is in progress.
 - `observer_error: Option<String>` -- inline error message.
 - `UiMode::ObserverSaveAttachmentPopup(usize)` -- active when the save-attachment popup is open for observer messages.
+- `UiMode::ObserverActionsPopup` -- Ctrl+K action list.
 
 The fetch is performed asynchronously via `tokio::spawn` calling `chat_utils::fetch_observer_chat`. Results are sent back to the main event loop through the `order_result_tx` channel using the `OperationResult::ObserverChatLoaded` and `OperationResult::ObserverChatError` variants.
 
 When closing the **operation result** popup from the **Disputes in Progress** tab (e.g. after saving an attachment or after a finalization result), the app stays on Disputes in Progress and returns to **ManagingDispute** mode instead of switching to the first tab.
 
-> **Note**: Observer fetches kind-14 messages using the disclosed Shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from the Shared key alone. Sensitive data is securely cleared from memory via `zeroize` when the admin clears the observer state with Ctrl+L.
+> **Note**: Observer fetches kind-14 messages using the disclosed Shared key and authenticates inner signers against taken-dispute party pubkeys plus the admin key (`fetch_observer_chat` / `observer_known_signer_roles`). GiftWrap cannot be unwrapped from the Shared key alone. Ctrl+L / Clear zeroizes Shared key input, the loaded pin, message content, and attachment decryption key bytes (`ChatAttachment::zeroize_secrets`).
 >
 > **Sharing the Shared key**: on My Trades, **Shift+K** opens a popup with the Shared key. Press **C** to copy the Shared key hex to the clipboard for pasting into a message to the admin — the signing key is never displayed or copied.
 
@@ -627,12 +630,13 @@ Admins communicate with buyers and sellers through an integrated chat interface 
 - **Direct typing**: Start typing to add text to input (when input is enabled)
 - **Paste**: Bracketed paste, **right-click**, and **Ctrl+V** / **Ctrl+Shift+V** / **Shift+Insert** (platform help text varies) append clipboard text into the message box when **INSERT**. Ctrl/Alt/Cmd chords are never inserted as literal characters, so **Ctrl+H**, **Ctrl+S**, **Ctrl+K**, and COMMAND-layer Shift chords keep working.
 - **Delete (local)**: Press **Delete** (COMMAND) or **Ctrl+K → D** to remove the selected dispute from the local `admin_disputes` table and the left sidebar. This does **not** cancel or settle on Mostro; **Shift+R** / Actions → Recover can re-fetch if the dispute is still assigned to you.
-- **INSERT / COMMAND**: Press **i** (or Insert) to enter INSERT; **Esc** returns to COMMAND (draft kept). Titles show `Message / INSERT` or `Message / COMMAND` (compact: `INSERT · Esc` / `COMMAND · i`).
-- **Ctrl+K Actions**: Resolve, Recover, Filter, Remove — same outcomes as the COMMAND Shift/Delete shortcuts.
+- **INSERT / COMMAND**: Press **i** (or Insert) on BUYER/SELLER to enter INSERT; **Esc** returns to COMMAND (draft kept for the same dispute/party). SERBERO is read-only. Titles show `Message / INSERT` or `Message / COMMAND` (compact: `INSERT · Esc` / `COMMAND · i`).
+- **Draft ownership**: Typing/paste binds `admin_chat_draft_owner`; Enter refuses to send if the live dispute/party no longer matches.
+- **Ctrl+K Actions**: Resolve, Recover, Filter, Remove — same outcomes as the COMMAND Shift/Delete shortcuts. Dispute id is pinned at open; letter keys only move selection, Enter confirms.
 - **Text wrapping**: Input wraps at word boundaries with trim behavior
 - **Multi-line support**: Supports up to 10 lines with visual growth
-- **Send on Enter**: Press Enter in INSERT to send message
-- **Clear after send**: Input automatically clears after sending
+- **Send on Enter**: Press Enter in INSERT to send message (ownership-checked)
+- **Clear after send**: Input and draft owner clear after sending
 
 #### Chat with Buyer Flow
 
@@ -794,26 +798,26 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 **In Chat Interface**:
 
-- **i / Esc**: INSERT typing / COMMAND shortcuts (aligned with My Trades)
-- **Enter**: Send message (when INSERT and input has text)
-- **Ctrl+K**: Dispute actions (Resolve / Recover / Filter / Remove)
+- **i / Esc**: INSERT typing / COMMAND shortcuts (aligned with My Trades; not on SERBERO)
+- **Enter**: Send message (when INSERT, ownership matches live dispute/party)
+- **Ctrl+K**: Dispute actions (Resolve / Recover / Filter / Remove); pin dispute id; letter selects, Enter confirms
 - **Shift+F**: Open finalization popup (COMMAND)
 - **Shift+R**: Recover missing taken disputes — orphan picker (↑↓ / Space), then `AdminTakeDispute` for selected IDs only (COMMAND)
-- **Tab**: Switch between Buyer and Seller chat views
+- **Tab**: Cycle Buyer / Seller / SERBERO (clears draft)
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)
 - **Ctrl+S**: Open save-attachment popup (when the current dispute/party has attachments). In the popup: **↑/↓** select attachment, **Enter** save selected to disk, **Esc** cancel.
 - **Backspace**: Delete characters from input (when INSERT)
-- **Up/Down**: Select different dispute in sidebar (filtered list + viewport scroll)
+- **Up/Down**: Select different dispute in sidebar (clears draft on change)
 
 **Visual Safety Features**:
 
 - **Color differentiation**: Buyer (Green) and Seller (Magenta) messages clearly distinguished
 - **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Magenta for Seller)
 - **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
-- **Keycap command bar**: One-row mode-aware shortcuts; contextual party/filter/file hints on the chat border (`Ctrl+S Save file` when attachments exist)
+- **Keycap command bar**: One-row mode-aware shortcuts (SERBERO read-only; skip-fit on narrow); contextual party/filter/file hints on the chat border (`Ctrl+S Save file` when attachments exist)
 - **Privacy icons**: 🟢 (info available) or 🔴 (private) for each party
-- **Context preservation**: Each dispute maintains its own complete message history
+- **Context preservation**: Each dispute maintains its own complete message history; drafts are bound to dispute+party
 - **Visual scrollbar**: Right-side scrollbar (↑/↓/│/█) indicates scroll position in chat
 - **Input state indicators**: `Message / INSERT` vs `Message / COMMAND` titles
 
@@ -842,12 +846,13 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 **Source Files**:
 
-- `src/ui/tabs/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, **scrollable dispute sidebar** (`ListState`), chat scrollbar, attachment toast, block title file count, keycap command bar
-- `src/ui/dispute_actions_popup.rs` - Ctrl+K dispute actions list (Resolve / Recover / Filter / Remove)
-- `src/ui/helpers/dispute_selection.rs` - Shared filter + id-based selection (`get_filtered_disputes`, `selected_filtered_dispute`, `move_dispute_selection`); regression tests for mixed open/closed lists
+- `src/ui/tabs/disputes_in_progress_tab.rs` - Chat UI rendering, dynamic input sizing, **scrollable dispute sidebar** (`ListState`), chat scrollbar, attachment toast, block title file count, keycap command bar (SERBERO read-only)
+- `src/ui/dispute_actions_popup.rs` - Ctrl+K dispute actions list (Resolve / Recover / Filter / Remove); pinned dispute id
+- `src/ui/helpers/dispute_selection.rs` - Shared filter + id-based selection (`get_filtered_disputes`, `selected_filtered_dispute`, `move_dispute_selection` clears draft); regression tests for mixed open/closed lists
+- `src/ui/key_handler/chat_helpers.rs` - Admin draft ownership (`admin_chat_draft_owner`) + My Trades draft helpers
 - `src/ui/key_handler/input_helpers.rs` - Non-blocking message sending via `tokio::spawn` (logs target dispute id on send)
-- `src/ui/key_handler/mod.rs` - Chat INSERT/COMMAND (`i` / Esc), Ctrl+K Actions, COMMAND Shift chords, End key, Ctrl+S save-attachment popup
-- `src/ui/key_handler/navigation.rs` - Up/Down dispute sidebar via `move_dispute_selection`
+- `src/ui/key_handler/mod.rs` - Chat INSERT/COMMAND (`i` / Esc), Ctrl+K Actions (letter=select), COMMAND Shift chords, End key, Ctrl+S save-attachment popup
+- `src/ui/key_handler/navigation.rs` - Up/Down dispute sidebar via `move_dispute_selection`; Tab pane switch clears draft
 - `src/ui/save_attachment_popup.rs` - Save attachment popup rendering (centered list, selection highlight, footer hint)
 - `src/ui/helpers/mod.rs` - Compatibility re-export layer for helper APIs used across UI modules
 - `src/ui/helpers/startup.rs` - Startup hydration, admin/user chat update application, and last-seen cursor updates

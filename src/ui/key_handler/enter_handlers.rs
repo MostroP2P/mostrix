@@ -389,6 +389,8 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
         return;
     }
 
+    // Resolve + validate draft ownership before using the live selection.
+    let owned = crate::ui::key_handler::chat_helpers::resolve_admin_chat_send_target(app);
     let content = app.admin_chat_input.trim().to_string();
     let input_enabled = app.admin_chat_input_enabled;
     run_enter_chat_send_flow(
@@ -398,19 +400,21 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
             input_enabled,
             content,
         },
-        |app| {
-            selected_filtered_dispute(app).map(|selected_dispute| {
-                let shared_key_hex = match app.active_chat_party {
-                    ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
-                    ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
-                };
-                let recipient_pubkey =
-                    dispute_wake_recipient(&selected_dispute, app.active_chat_party);
-                DisputeChatTarget {
-                    dispute_id_key: selected_dispute.dispute_id.clone(),
-                    shared_key_hex,
-                    recipient_pubkey,
-                }
+        move |app| {
+            let (owned_id, owned_party) = owned?;
+            let selected_dispute = selected_filtered_dispute(app)?;
+            if selected_dispute.dispute_id != owned_id || app.active_chat_party != owned_party {
+                return None;
+            }
+            let shared_key_hex = match owned_party {
+                ChatParty::Buyer => selected_dispute.buyer_shared_key_hex.clone(),
+                ChatParty::Seller => selected_dispute.seller_shared_key_hex.clone(),
+            };
+            let recipient_pubkey = dispute_wake_recipient(&selected_dispute, owned_party);
+            Some(DisputeChatTarget {
+                dispute_id_key: owned_id,
+                shared_key_hex,
+                recipient_pubkey,
             })
         },
         |app, target, content| {
@@ -429,7 +433,7 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
             );
         },
         |app| {
-            app.admin_chat_input.clear();
+            crate::ui::key_handler::chat_helpers::clear_admin_chat_draft(app);
             app.admin_chat_input_enabled = true;
         },
     );

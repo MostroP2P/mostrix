@@ -41,17 +41,22 @@ pub enum UiMode {
     SettingsInstructionsPopup(UserRole, Box<UiMode>),
     /// My Trades Ctrl+K trade-action list; Esc restores `previous_mode`.
     /// `order_id` is pinned at open so sidebar rebuilds cannot retarget money actions.
+    /// Letter keys move the highlight only; Enter confirms.
     TradeActionsPopup {
         selected_index: usize,
         order_id: uuid::Uuid,
         previous_mode: Box<UiMode>,
     },
     /// Disputes in Progress Ctrl+K action list; Esc restores `previous_mode`.
+    /// `dispute_id` is pinned at open so list refreshes cannot retarget Resolve/Remove.
+    /// Letter keys move the highlight only; Enter confirms.
     DisputeActionsPopup {
         selected_index: usize,
+        dispute_id: Option<String>,
         previous_mode: Box<UiMode>,
     },
     /// Observer Ctrl+K action list; Esc restores `previous_mode`.
+    /// Letter keys move the highlight only; Enter confirms (so `L` cannot wipe alone).
     ObserverActionsPopup {
         selected_index: usize,
         previous_mode: Box<UiMode>,
@@ -191,9 +196,11 @@ impl Clone for UiMode {
             },
             UiMode::DisputeActionsPopup {
                 selected_index,
+                dispute_id,
                 previous_mode,
             } => UiMode::DisputeActionsPopup {
                 selected_index: *selected_index,
+                dispute_id: dispute_id.clone(),
                 previous_mode: Box::new((**previous_mode).clone()),
             },
             UiMode::ObserverActionsPopup {
@@ -302,6 +309,9 @@ pub struct AppState {
     pub selected_dispute_id: Option<String>, // Selected dispute (by dispute id) in Disputes in Progress tab
     pub active_chat_party: ChatParty, // Which party the admin is currently chatting with
     pub admin_chat_input: String,     // Current message being typed by admin
+    /// `(dispute_id, party)` this admin composer draft belongs to. Cleared with the
+    /// draft when the live sidebar/party selection no longer matches (nav or take-over).
+    pub admin_chat_draft_owner: Option<(String, ChatParty)>,
     /// INSERT vs COMMAND for Disputes in Progress (`true` = INSERT typing; `i` / Esc).
     pub admin_chat_input_enabled: bool,
     pub(crate) chat_copy_session: Option<ChatCopySession>,
@@ -392,6 +402,9 @@ pub struct AppState {
     pub sending_attachment_order_id: Option<String>,
     /// Observer mode: disclosed `K_conv` as 64-char hex (read-only grant).
     pub observer_shared_key_input: String,
+    /// `K_conv` hex that loaded the current Observer transcript (pinned for attachment
+    /// decrypt). Cleared when the Shared key field diverges or on full Clear.
+    pub observer_loaded_shared_key: String,
     /// Observer mode: chat messages fetched from relays for the pasted `K_conv`.
     pub observer_messages: Vec<DisputeChatMessage>,
     /// Observer mode: scroll state for chat messages.
@@ -481,6 +494,7 @@ impl AppState {
             selected_dispute_id: None,
             active_chat_party: ChatParty::Buyer,
             admin_chat_input: String::new(),
+            admin_chat_draft_owner: None,
             admin_chat_input_enabled: true, // INSERT by default when ManagingDispute
             chat_copy_session: None,
             chat_copy_feedback: None,
@@ -531,6 +545,7 @@ impl AppState {
             user_send_attachment_explorer: None,
             sending_attachment_order_id: None,
             observer_shared_key_input: String::new(),
+            observer_loaded_shared_key: String::new(),
             observer_messages: Vec::new(),
             observer_scrollview_state: tui_scrollview::ScrollViewState::default(),
             observer_line_starts: Vec::new(),
@@ -645,30 +660,59 @@ impl AppState {
     }
 
     /// Invalidate in-flight Observer fetches, then mark a new fetch as current.
+    /// Pins the Shared key field as the loaded `K_conv` for attachment decrypt.
     pub fn begin_observer_fetch(&mut self) -> u64 {
         let generation = self.bump_observer_fetch_generation();
-        for msg in &mut self.observer_messages {
-            msg.content.zeroize();
-        }
-        self.observer_messages.clear();
+        self.zeroize_observer_messages();
+        self.observer_loaded_shared_key = self.observer_shared_key_input.trim().to_string();
         self.observer_error = None;
         self.observer_loading = true;
         generation
     }
 
+    /// Drop the displayed transcript (and attachment keys) when the Shared key
+    /// field no longer matches the pinned loaded key. Keeps the edited input.
+    pub fn invalidate_observer_transcript_if_key_diverged(&mut self) {
+        if self.observer_loaded_shared_key.is_empty() {
+            return;
+        }
+        if self.observer_shared_key_input.trim() == self.observer_loaded_shared_key.trim() {
+            return;
+        }
+        self.bump_observer_fetch_generation();
+        self.zeroize_observer_messages();
+        self.observer_loaded_shared_key.zeroize();
+        self.observer_loaded_shared_key.clear();
+        self.observer_loading = false;
+        if let Some(err) = &mut self.observer_error {
+            err.zeroize();
+        }
+        self.observer_error = None;
+    }
+
+    fn zeroize_observer_messages(&mut self) {
+        for msg in &mut self.observer_messages {
+            msg.content.zeroize();
+            if let Some(att) = msg.attachment.as_mut() {
+                att.zeroize_secrets();
+            }
+        }
+        self.observer_messages.clear();
+        self.observer_line_starts.clear();
+    }
+
     /// Securely wipe all observer inputs and fetched content (Ctrl+L Clear /
-    /// Observer Actions → Clear all). Uses `zeroize` before clear, invalidates
-    /// in-flight fetches, and resets error/loading to safe defaults.
+    /// Observer Actions → Clear all). Zeroizes Shared key input, the loaded
+    /// `K_conv` pin, message content, and attachment decryption keys; invalidates
+    /// in-flight fetches; resets error/loading to safe defaults.
     pub fn clear_observer_secrets(&mut self) {
         self.bump_observer_fetch_generation();
         self.observer_shared_key_input.zeroize();
         self.observer_shared_key_input.clear();
+        self.observer_loaded_shared_key.zeroize();
+        self.observer_loaded_shared_key.clear();
 
-        for msg in &mut self.observer_messages {
-            msg.content.zeroize();
-        }
-        self.observer_messages.clear();
-        self.observer_line_starts.clear();
+        self.zeroize_observer_messages();
         self.observer_loading = false;
 
         if let Some(err) = &mut self.observer_error {
@@ -689,6 +733,7 @@ impl AppState {
         self.selected_dispute_id = None;
         self.active_chat_party = ChatParty::Buyer;
         self.admin_chat_input.clear();
+        self.admin_chat_draft_owner = None;
         self.offline_overlay_message = None;
         self.background_task_alarms.clear();
         // Clear observer state when switching roles so sensitive data does not linger
@@ -766,6 +811,38 @@ mod tests {
         assert_ne!(app.observer_fetch_generation, gen);
         assert!(app.observer_messages.is_empty());
         assert!(!app.observer_loading);
+        assert!(app.observer_loaded_shared_key.is_empty());
+    }
+
+    #[test]
+    fn editing_shared_key_invalidates_loaded_transcript_and_pins_on_fetch() {
+        use crate::ui::chat::{ChatAttachment, ChatAttachmentType};
+
+        let mut app = AppState::new(UserRole::Admin);
+        app.observer_shared_key_input = "ab".repeat(32);
+        let gen = app.begin_observer_fetch();
+        assert_eq!(app.observer_loaded_shared_key, "ab".repeat(32));
+        app.observer_messages.push(DisputeChatMessage {
+            sender: ChatSender::Buyer,
+            content: "secret".into(),
+            timestamp: 1,
+            target_party: None,
+            attachment: Some(ChatAttachment {
+                blossom_url: "https://example.com/a".into(),
+                filename: "a.bin".into(),
+                mime_type: None,
+                file_type: ChatAttachmentType::File,
+                decryption_key: Some(vec![1, 2, 3, 4]),
+            }),
+        });
+        app.observer_fetch_generation = gen;
+        app.observer_loading = false;
+
+        app.observer_shared_key_input.push('z');
+        app.invalidate_observer_transcript_if_key_diverged();
+        assert!(app.observer_messages.is_empty());
+        assert!(app.observer_loaded_shared_key.is_empty());
+        assert_ne!(app.observer_fetch_generation, gen);
     }
 
     /// MOSTRO-075: stale created_at must not roll transport back (same instance).

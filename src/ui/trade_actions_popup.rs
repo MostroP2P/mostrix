@@ -22,7 +22,7 @@ pub fn trade_action_count() -> usize {
     TRADE_ACTION_ROWS.len()
 }
 
-/// Letter shortcut → row index (same letters as COMMAND Shift+chords).
+/// Letter → row index for highlight only (Enter confirms; same letters as COMMAND Shift chords).
 #[must_use]
 pub fn trade_action_index_for_key(c: char) -> Option<usize> {
     match c.to_ascii_lowercase() {
@@ -86,7 +86,7 @@ pub fn render_trade_actions_popup(f: &mut ratatui::Frame, selected_index: usize)
 
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                "↑↓ select · letter jump · Enter",
+                "↑↓/letter select · Enter confirm",
                 Style::default().fg(Color::DarkGray),
             )]))
             .alignment(ratatui::layout::Alignment::Center),

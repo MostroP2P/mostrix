@@ -344,6 +344,7 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
     // Handle paste for the Observer Shared key field
     if app.observer_inputs_editable() {
         app.observer_shared_key_input.push_str(&filtered_text);
+        app.invalidate_observer_transcript_if_key_diverged();
     }
 
     // Disputes in Progress chatbox (admin) — keeps newlines for multi-line drafts

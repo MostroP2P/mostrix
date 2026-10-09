@@ -26,9 +26,9 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
 3. **Review Details**: View dispute information in the header (parties, amounts, ratings, privacy)
 4. **Chat with Parties**:
    - Use Tab to switch between buyer and seller chat views
-   - Press **i** to enter INSERT (type freely); **Esc** returns to COMMAND
-   - Press **Ctrl+K** for Resolve / Recover / Filter / Remove
-   - Type messages in the input box when INSERT; Enter to send
+   - Press **i** to enter INSERT on BUYER/SELLER (type freely); **Esc** returns to COMMAND. SERBERO is read-only
+   - Press **Ctrl+K** for Resolve / Recover / Filter / Remove (letter selects, Enter confirms; dispute id pinned)
+   - Type messages in the input box when INSERT; Enter sends only if the draft still belongs to the live dispute/party
    - Use PageUp/PageDown to scroll through chat history
    - Press End to jump to bottom of chat (latest messages)
    - Visual scrollbar on the right shows position in chat history
@@ -132,10 +132,10 @@ Finalized disputes: pay/refund buttons are dimmed (inner body `—`); use **Esc*
 
 - Up/Down: Select dispute in sidebar
 - Tab: Switch between buyer/seller chat party
-- i / Esc: INSERT typing / COMMAND shortcuts
-- Ctrl+K: Dispute actions (Resolve / Recover / Filter / Remove)
-- Type: Start typing message in input box (when INSERT)
-- Enter: Send message (INSERT)
+- i / Esc: INSERT typing / COMMAND shortcuts (not on SERBERO)
+- Ctrl+K: Dispute actions (Resolve / Recover / Filter / Remove); letter selects, Enter confirms
+- Type: Start typing message in input box (when INSERT); draft bound to dispute+party
+- Enter: Send message (INSERT; ownership-checked)
 - Shift+F: Open finalization popup (COMMAND)
 - PageUp/PageDown: Scroll through chat history
 - End: Jump to bottom of chat (latest messages)
@@ -320,21 +320,22 @@ The chat interface provides real-time communication with dispute parties:
 
 **Input Handling**:
 
-- **INSERT / COMMAND**: Press **i** (or Insert) to enter INSERT; **Esc** returns to COMMAND (draft kept)
-  - INSERT: type freely (capitals OK); Enter sends
+- **INSERT / COMMAND**: Press **i** (or Insert) on BUYER/SELLER to enter INSERT; **Esc** returns to COMMAND (draft kept for same dispute/party)
+  - INSERT: type freely (capitals OK); Enter sends only if ownership matches
   - COMMAND: Shift chords and Delete work without colliding with typing
+  - SERBERO: read-only command bar (no Write/Send)
   - Titles show `Message / INSERT` or `Message / COMMAND`
-- **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (same as COMMAND shortcuts)
+- **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (pinned dispute id; letter selects, Enter confirms)
 - **Text wrapping**: Input wraps at word boundaries, respects available width
 - **Character limit**: Grows up to 10 lines, with visual feedback
-- **Send behavior**: Enter sends message (INSERT); Shift+F or Ctrl+K → F opens finalization
-- **Clear on send**: Input automatically clears after sending
+- **Send behavior**: Enter sends message (INSERT) only when `admin_chat_draft_owner` matches the live dispute/party; Shift+F or Ctrl+K → F opens finalization
+- **Clear on send**: Input and draft owner clear after sending
 
 ### Chat Footer
 
-The footer is a **one-row keycap command bar** (aligned with My Trades), width-truncated by whole groups:
+The footer is a **one-row keycap command bar** (aligned with My Trades). Groups that do not fit are **skipped** so later shortcuts can still appear; on very narrow widths Help/Actions stay discoverable:
 
-**COMMAND** (example):
+**COMMAND** (BUYER/SELLER example):
 
 ```text
 i Write · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy
@@ -346,7 +347,7 @@ i Write · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy
 Enter Send · Esc Commands · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy
 ```
 
-Party, filter, and file hints (`Ctrl+S Save file` when attachments exist) sit on the **chat border** (`title_bottom`), not in the keycap row.
+**SERBERO** omits Write/Send (read-only). Party, filter, and file hints (`Ctrl+S Save file` when attachments exist) sit on the **chat border** (`title_bottom`), not in the keycap row.
 
 ## Best Practices
 
@@ -364,7 +365,8 @@ Party, filter, and file hints (`Ctrl+S Save file` when attachments exist) sit on
 ## Related Files
 
 - `src/util/order_utils/bond_resolution.rs` - `BondSlashChoice`, wire mapping, `finalize_success_message`
-- `src/ui/dispute_actions_popup.rs` - Ctrl+K dispute actions (Resolve opens finalize flow)
+- `src/ui/dispute_actions_popup.rs` - Ctrl+K dispute actions (pinned dispute id; letter selects, Enter confirms; Resolve opens finalize flow)
+- `src/ui/key_handler/chat_helpers.rs` - Admin draft ownership helpers
 - `src/ui/dispute_finalization_popup.rs` - Finalize popup (titles + inner `Admin settle` / `Admin cancel` / bond label)
 - `src/ui/operation_result.rs` - Success/error popups (word wrap, dynamic height for `Info`)
 - `src/ui/key_handler/admin_handlers.rs` - `execute_finalize_dispute_action`, waiting mode, result channel

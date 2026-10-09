@@ -305,6 +305,9 @@ pub fn append_paste_to_admin_dispute_chat(app: &mut AppState, pasted_text: &str)
     if !admin_dispute_chat_input_active(app) {
         return false;
     }
+    if !crate::ui::key_handler::chat_helpers::prepare_admin_chat_edit(app) {
+        return false;
+    }
     let filtered = filter_pasted_chat_text(pasted_text);
     if filtered.is_empty() {
         return false;
@@ -358,11 +361,20 @@ fn handle_admin_chat_input(
     // INSERT accepts Shift+letter as capitals (COMMAND Shift chords are gated outside).
     match code {
         KeyCode::Char(c) => {
+            if !crate::ui::key_handler::chat_helpers::prepare_admin_chat_edit(app) {
+                return Some(true);
+            }
             app.admin_chat_input.push(c);
             Some(true)
         }
         KeyCode::Backspace => {
+            if !crate::ui::key_handler::chat_helpers::prepare_admin_chat_edit(app) {
+                return Some(true);
+            }
             app.admin_chat_input.pop();
+            if app.admin_chat_input.is_empty() {
+                app.admin_chat_draft_owner = None;
+            }
             Some(true)
         }
         _ => None,
@@ -808,10 +820,11 @@ fn spawn_shared_key_disclosure(
     });
 }
 
-/// Apply a Ctrl+K menu row (or letter jump) — same confirms as COMMAND Shift shortcuts.
+/// Apply a Ctrl+K menu row (Enter after selection) — same confirms as COMMAND Shift shortcuts.
 ///
-/// `order_id` is the order pinned when the popup opened; never re-read the
-/// sidebar index (a refresh can reorder rows while the modal is open).
+/// Letter keys only move the highlight; they do not call this. `order_id` is
+/// pinned when the popup opened; never re-read the sidebar index (a refresh can
+/// reorder rows while the modal is open).
 fn apply_trade_action_selection(
     app: &mut AppState,
     selected_index: usize,
@@ -873,6 +886,10 @@ fn enter_order_chat_insert(app: &mut AppState) {
 }
 
 fn enter_dispute_chat_insert(app: &mut AppState) {
+    // SERBERO pane is read-only — do not advertise or enter INSERT there.
+    if app.admin_show_solver_dms {
+        return;
+    }
     app.admin_chat_input_enabled = true;
 }
 
@@ -885,10 +902,14 @@ fn admin_dispute_interactive(app: &AppState) -> bool {
         )
 }
 
-/// Apply a Ctrl+K dispute-menu row (or letter jump) — same as COMMAND Shift/Del.
+/// Apply a Ctrl+K dispute-menu row (Enter after selection) — same as COMMAND Shift/Del.
+///
+/// Letter keys only move the highlight. Uses the dispute id pinned when the
+/// popup opened (not the live sidebar).
 fn apply_dispute_action_selection(
     app: &mut AppState,
     selected_index: usize,
+    pinned_dispute_id: Option<String>,
     disputes: &Arc<Mutex<Vec<Dispute>>>,
 ) {
     // Restore interactive mode so follow-up handlers see Managing/Normal again.
@@ -900,22 +921,37 @@ fn apply_dispute_action_selection(
 
     match selected_index {
         0 => {
-            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
-                if let Some(selected_dispute) = selected_filtered_dispute(app) {
-                    if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
-                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
-                            dispute_id,
-                            selected_button_index: 0,
-                            bond: crate::util::order_utils::BondSlashChoice::None,
-                            slash_submenu_open: false,
-                            slash_submenu_index: 0,
-                        });
-                    }
-                }
-            } else {
+            if !matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 app.mode = UiMode::operation_result(OperationResult::Info(
                     "Open a dispute chat (Managing) to resolve.".to_string(),
                 ));
+                return;
+            }
+            let Some(id_str) = pinned_dispute_id else {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "Select a dispute in the sidebar to resolve.".to_string(),
+                ));
+                return;
+            };
+            if !app
+                .admin_disputes_in_progress
+                .iter()
+                .any(|d| d.dispute_id == id_str)
+            {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "That dispute is no longer available.".to_string(),
+                ));
+                return;
+            }
+            if let Ok(dispute_id) = uuid::Uuid::parse_str(&id_str) {
+                app.selected_dispute_id = Some(id_str);
+                app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                    dispute_id,
+                    selected_button_index: 0,
+                    bond: crate::util::order_utils::BondSlashChoice::None,
+                    slash_submenu_open: false,
+                    slash_submenu_index: 0,
+                });
             }
         }
         1 => {
@@ -927,15 +963,37 @@ fn apply_dispute_action_selection(
                 DisputeFilter::Finalized => DisputeFilter::InProgress,
             };
             app.selected_dispute_id = None;
+            crate::ui::key_handler::chat_helpers::clear_admin_chat_draft(app);
         }
         3 => {
-            admin_handlers::begin_delete_admin_dispute(app);
+            let Some(id_str) = pinned_dispute_id else {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "Select a dispute in the sidebar to delete from local database.".to_string(),
+                ));
+                return;
+            };
+            if !app
+                .admin_disputes_in_progress
+                .iter()
+                .any(|d| d.dispute_id == id_str)
+            {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "That dispute is no longer available.".to_string(),
+                ));
+                return;
+            }
+            app.mode = UiMode::AdminMode(AdminMode::ConfirmDeleteAdminDispute {
+                dispute_id: id_str,
+                selected_button: true,
+            });
         }
         _ => {}
     }
 }
 
-/// Apply a Ctrl+K Observer menu row (or letter jump).
+/// Apply a Ctrl+K Observer menu row (Enter after selection).
+///
+/// Letter keys only move the highlight (so `L` alone cannot wipe secrets).
 fn apply_observer_action_selection(app: &mut AppState, selected_index: usize) {
     let previous = match &app.mode {
         UiMode::ObserverActionsPopup { previous_mode, .. } => (**previous_mode).clone(),
@@ -1435,8 +1493,13 @@ pub fn handle_key_event(
                     && !key_event.modifiers.contains(KeyModifiers::ALT)
                     && !key_event.modifiers.contains(KeyModifiers::SUPER) =>
             {
+                // Letters only move the highlight; Enter commits.
                 if let Some(idx) = crate::ui::trade_actions_popup::trade_action_index_for_key(c) {
-                    apply_trade_action_selection(app, idx, order_id, pool, order_result_tx);
+                    app.mode = UiMode::TradeActionsPopup {
+                        selected_index: idx,
+                        order_id,
+                        previous_mode,
+                    };
                     return Some(true);
                 }
                 return Some(true);
@@ -1448,10 +1511,12 @@ pub fn handle_key_event(
     // Disputes in Progress Ctrl+K action list
     if let UiMode::DisputeActionsPopup {
         selected_index,
+        dispute_id,
         previous_mode,
     } = &app.mode
     {
         let selected_index = *selected_index;
+        let dispute_id = dispute_id.clone();
         let previous_mode = previous_mode.clone();
         let count = crate::ui::dispute_actions_popup::dispute_action_count();
         match code {
@@ -1467,6 +1532,7 @@ pub fn handle_key_event(
                 };
                 app.mode = UiMode::DisputeActionsPopup {
                     selected_index: next,
+                    dispute_id,
                     previous_mode,
                 };
                 return Some(true);
@@ -1479,12 +1545,13 @@ pub fn handle_key_event(
                 };
                 app.mode = UiMode::DisputeActionsPopup {
                     selected_index: next,
+                    dispute_id,
                     previous_mode,
                 };
                 return Some(true);
             }
             KeyCode::Enter => {
-                apply_dispute_action_selection(app, selected_index, disputes);
+                apply_dispute_action_selection(app, selected_index, dispute_id, disputes);
                 return Some(true);
             }
             KeyCode::Char(c)
@@ -1492,9 +1559,14 @@ pub fn handle_key_event(
                     && !key_event.modifiers.contains(KeyModifiers::ALT)
                     && !key_event.modifiers.contains(KeyModifiers::SUPER) =>
             {
+                // Letters only move the highlight; Enter commits (no accidental Clear/Remove).
                 if let Some(idx) = crate::ui::dispute_actions_popup::dispute_action_index_for_key(c)
                 {
-                    apply_dispute_action_selection(app, idx, disputes);
+                    app.mode = UiMode::DisputeActionsPopup {
+                        selected_index: idx,
+                        dispute_id,
+                        previous_mode,
+                    };
                     return Some(true);
                 }
                 return Some(true);
@@ -1550,10 +1622,14 @@ pub fn handle_key_event(
                     && !key_event.modifiers.contains(KeyModifiers::ALT)
                     && !key_event.modifiers.contains(KeyModifiers::SUPER) =>
             {
+                // Letters only move the highlight; Enter commits (L must not wipe secrets).
                 if let Some(idx) =
                     crate::ui::observer_actions_popup::observer_action_index_for_key(c)
                 {
-                    apply_observer_action_selection(app, idx);
+                    app.mode = UiMode::ObserverActionsPopup {
+                        selected_index: idx,
+                        previous_mode,
+                    };
                     return Some(true);
                 }
                 return Some(true);
@@ -1608,6 +1684,7 @@ pub fn handle_key_event(
             let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
             if !filtered.is_empty() {
                 app.observer_shared_key_input.push_str(&filtered);
+                app.invalidate_observer_transcript_if_key_diverged();
                 return Some(true);
             }
         }
@@ -1859,17 +1936,23 @@ pub fn handle_key_event(
                     .collect();
                 if let Some(att) = attachments.get(selected_idx) {
                     if let Some(tx) = save_attachment_tx {
-                        let key_prefix: String =
-                            app.observer_shared_key_input.chars().take(8).collect();
+                        // Decrypt with the pinned loaded K_conv, not the editable field
+                        // (editing after Load must not retarget attachment crypto).
+                        let loaded = app.observer_loaded_shared_key.trim();
+                        if loaded.is_empty() {
+                            app.mode = UiMode::operation_result(OperationResult::Error(
+                                "Reload the Observer chat before saving attachments.".to_string(),
+                            ));
+                            return Some(true);
+                        }
+                        let key_prefix: String = loaded.chars().take(8).collect();
                         let id = format!("observer_{}", key_prefix);
 
-                        // Observer holds K_conv only; use it as the ChaCha key when the
-                        // attachment JSON omitted an inline key.
                         let mut att_clone = (*att).clone();
                         if att_clone.decryption_key.is_none() {
-                            if let Some(keys) = crate::util::chat_utils::keys_from_shared_hex(
-                                &app.observer_shared_key_input,
-                            ) {
+                            if let Some(keys) =
+                                crate::util::chat_utils::keys_from_shared_hex(loaded)
+                            {
                                 att_clone.decryption_key =
                                     Some(keys.secret_key().secret_bytes().to_vec());
                             }
@@ -2132,13 +2215,15 @@ pub fn handle_key_event(
             let previous = app.mode.clone();
             app.mode = UiMode::DisputeActionsPopup {
                 selected_index: 0,
+                dispute_id: app.selected_dispute_id.clone(),
                 previous_mode: Box::new(previous),
             };
             return Some(true);
         }
 
-        // Enter INSERT: bare i / Insert (COMMAND only while ManagingDispute).
+        // Enter INSERT: bare i / Insert (COMMAND only while ManagingDispute, not SERBERO).
         if managing
+            && !app.admin_show_solver_dms
             && !app.admin_chat_input_enabled
             && !has_ctrl
             && !has_alt
@@ -2172,6 +2257,7 @@ pub fn handle_key_event(
                     DisputeFilter::Finalized => DisputeFilter::InProgress,
                 };
                 app.selected_dispute_id = None;
+                crate::ui::key_handler::chat_helpers::clear_admin_chat_draft(app);
                 return Some(true);
             }
             if matches!(code, KeyCode::Char('r') | KeyCode::Char('R')) {
@@ -2412,10 +2498,12 @@ pub fn handle_key_event(
             match code {
                 KeyCode::Char(c) => {
                     app.observer_shared_key_input.push(c);
+                    app.invalidate_observer_transcript_if_key_diverged();
                     return Some(true);
                 }
                 KeyCode::Backspace => {
                     app.observer_shared_key_input.pop();
+                    app.invalidate_observer_transcript_if_key_diverged();
                     return Some(true);
                 }
                 _ => {}
@@ -3687,6 +3775,12 @@ mod key_handler_tests {
         app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
         app.admin_chat_input_enabled = true;
+        app.admin_disputes_in_progress = vec![crate::models::AdminDispute {
+            dispute_id: "d-insert".into(),
+            status: Some("in-progress".into()),
+            ..Default::default()
+        }];
+        app.selected_dispute_id = Some("d-insert".into());
 
         let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert!(handle_admin_chat_input(&mut app, ctrl_v.code, &ctrl_v).is_none());

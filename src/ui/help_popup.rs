@@ -338,10 +338,12 @@ fn compact_observer_help(inner_width: u16, inner_height: u16) -> Vec<Line<'stati
     let (title_style, _) = settings_instruction_block_style();
     // Essentials first (fit on 20x8), then fill remaining height with feasible extras.
     let candidate_rows: &[&str] = if width < 36 {
+        // Keep each row short enough for ~20-col terminals (no mid-row wrap).
         &[
-            "Enter Ctrl+C ↑↓",
-            "Esc Ctrl+L Ctrl+S",
-            "↑↓ PgUp/PgDn: Scroll",
+            "Enter Ctrl+K",
+            "Ctrl+L Ctrl+C",
+            "Esc Ctrl+S",
+            "↑↓ PgUp/PgDn",
             HELP_OBS_PASTE_SHARED_KEY,
         ]
     } else {
@@ -835,7 +837,13 @@ mod help_content_tests {
                 .draw(|frame| render_help_popup(frame, &app, Tab::Admin(AdminTab::Observer)))
                 .unwrap();
             let buffer = terminal.backend().buffer();
-            for expected in ["Ctrl+L", "Ctrl+S", "Ctrl+C", "Enter"] {
+            let essentials = if width <= 20 && height <= 8 {
+                // Tiny: two short rows fit Enter/Ctrl+K and Ctrl+L/Ctrl+C.
+                &["Enter", "Ctrl+K", "Ctrl+L", "Ctrl+C"][..]
+            } else {
+                &["Ctrl+L", "Ctrl+S", "Ctrl+C", "Enter"][..]
+            };
+            for expected in essentials {
                 assert!(
                     buffer_contains(buffer, expected),
                     "missing {expected} at {width}x{height}: {}",
@@ -860,13 +868,14 @@ mod help_content_tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert!(
-            buffer_contains(buffer, "Ctrl+C ↑↓") || buffer_contains(buffer, "Enter Ctrl+C ↑↓"),
-            "copy start/nav guidance missing at 20x8: {}",
+            buffer_contains(buffer, "Enter Ctrl+K") || buffer_contains(buffer, "Ctrl+K"),
+            "Actions guidance missing at 20x8: {}",
             buffer_text(buffer)
         );
         assert!(
-            buffer_contains(buffer, "Esc Ctrl+L") || buffer_contains(buffer, "Esc Ctrl+L Ctrl+S"),
-            "copy-cancel plus clear/save guidance missing at 20x8: {}",
+            buffer_contains(buffer, "Ctrl+L Ctrl+C")
+                || (buffer_contains(buffer, "Ctrl+L") && buffer_contains(buffer, "Ctrl+C")),
+            "clear/copy guidance missing at 20x8: {}",
             buffer_text(buffer)
         );
     }

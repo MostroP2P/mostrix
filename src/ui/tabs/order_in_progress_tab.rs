@@ -1,8 +1,10 @@
 //! My Trades / order chat UI.
 //!
 //! Shortcut hints use a one-row keycap command bar (INSERT / COMMAND) with
-//! channel and file hints on the chat border; trade actions stay in Ctrl+K.
-//! Ctrl+H and Shift+H help overlays are styled in [`crate::ui::help_popup`].
+//! channel and file hints on the chat border; oversized keycap groups are
+//! skipped so later shortcuts can still fit. Trade actions stay in Ctrl+K
+//! (letter selects, Enter confirms). Ctrl+H and Shift+H help overlays are
+//! styled in [`crate::ui::help_popup`].
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
@@ -82,8 +84,9 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
         let key_text = format!(" {key} ");
         let label_text = format!(" {label}");
         let group_width = Span::raw(&key_text).width() + Span::raw(&label_text).width();
+        // Skip groups that do not fit; keep trying later (shorter) groups.
         if used + gap + group_width > usize::from(width) {
-            break;
+            continue;
         }
         let key_style = if spans.is_empty() {
             Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
@@ -921,14 +924,20 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let chat_border_hints = if copy_context {
         Line::default()
     } else if hint_height == 0 {
-        shortcut_bar(
-            chat_area.width.saturating_sub(2),
-            &[
-                ("Ctrl+K", "Actions"),
-                ("Ctrl+H", "Help"),
-                ("Ctrl+C", "Copy"),
-            ],
-        )
+        // Compact fallback: chrome first (discoverable Actions/Help/Copy), then
+        // contextual file/channel hints. shortcut_bar skips groups that do not
+        // fit so a long Retry cannot suppress later Save/Send that would fit.
+        let mut compact = vec![
+            ("Ctrl+K", "Actions"),
+            ("Ctrl+H", "Help"),
+            ("Ctrl+C", "Copy"),
+        ];
+        for &(key, label) in &chat_hints {
+            if matches!(key, "Tab" | "Ctrl+S" | "Ctrl+O" | "Ctrl+Shift+O") {
+                compact.push((key, label));
+            }
+        }
+        shortcut_bar(chat_area.width.saturating_sub(2), &compact)
     } else {
         shortcut_bar(chat_area.width.saturating_sub(2), &chat_hints)
     };

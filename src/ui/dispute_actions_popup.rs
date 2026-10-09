@@ -20,7 +20,7 @@ pub fn dispute_action_count() -> usize {
     DISPUTE_ACTION_ROWS.len()
 }
 
-/// Letter shortcut → row index (same letters as COMMAND Shift+chords / Del).
+/// Letter → row index for highlight only (Enter confirms; same letters as COMMAND Shift/Del).
 #[must_use]
 pub fn dispute_action_index_for_key(c: char) -> Option<usize> {
     match c.to_ascii_lowercase() {
@@ -79,7 +79,7 @@ pub fn render_dispute_actions_popup(f: &mut ratatui::Frame, selected_index: usiz
 
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                "↑↓ select · letter jump · Enter",
+                "↑↓/letter select · Enter confirm",
                 Style::default().fg(Color::DarkGray),
             )]))
             .alignment(ratatui::layout::Alignment::Center),

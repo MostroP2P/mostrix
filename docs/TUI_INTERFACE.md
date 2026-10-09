@@ -102,14 +102,15 @@ Focused on dispute resolution and protocol management.
   - **Scrollable sidebar list** (`List` + `ListState`): ↑↓ keeps the selected dispute in view when many disputes overflow the sidebar; scrollbar when the list is taller than the panel
   - Finalization popup for resolution actions
   - **Empty state**: When no disputes are available, displays helpful key hints footer (filter + `↑↓: Select Dispute | Ctrl+H: Help`); footer is width-aware (narrow terminals show only Ctrl+H).
-  - **Keycap command bar**: Same INSERT/COMMAND pattern as My Trades — **i** / Esc for typing vs shortcuts; **Ctrl+K** Actions (Resolve / Recover / Filter / Remove). See [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
+  - **Keycap command bar**: Same INSERT/COMMAND pattern as My Trades — **i** / Esc for typing vs shortcuts; **Ctrl+K** Actions (Resolve / Recover / Filter / Remove; dispute id pinned; letter selects, Enter confirms). **SERBERO** pane is read-only (no Write/Send). Composer drafts are bound to `(dispute_id, party)`. See [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
 - **Observer**: Read-only workspace for inspecting user-to-user encrypted chats via a disclosed **Shared key** (protocol `K_conv`):
   - **Shared key** input (64-char hex secret, paste-friendly). There is currently no UI field for the optional Signer pubkey (`pub(K_sign)`) locator, so `fetch_observer_chat` is always called with `sign_pubkey: None`.
+  - Load pins `observer_loaded_shared_key` for attachment decrypt; editing the field after Load invalidates the transcript
   - Fetches kind-14 chat events from relays for the last 7 days (`#p = pub(K_conv)`)
   - Decrypts messages and maps sender pubkeys to Buyer/Seller/Admin roles automatically
   - Displays chat using the same formatting as the dispute chat (color-coded, right-aligned Buyer/Seller, left-aligned Admin)
-  - Supports file/image attachments with `Ctrl+S` to save (same popup as dispute chat)
-  - Keyboard hints: `Enter` Load, **`Ctrl+L` Clear** (full wipe — not Esc), `Ctrl+C` Copy, `Ctrl+H` Help, **`Ctrl+K` Actions** (Clear all / Save attachment / Dismiss error); **`Esc` Dismiss** clears the inline error only when one is shown
+  - Supports file/image attachments with `Ctrl+S` to save (uses pinned loaded key; same popup as dispute chat)
+  - Keyboard hints: `Enter` Load, **`Ctrl+L` Clear** (full wipe including attachment keys — not Esc), `Ctrl+C` Copy, `Ctrl+H` Help, **`Ctrl+K` Actions** (letter selects, Enter confirms); **`Esc` Dismiss** clears the inline error only when one is shown. Narrow (&lt;36) bars prioritize Help/Actions/Clear
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key (set `admin_privkey` to the Mostro daemon nsec)
@@ -193,8 +194,8 @@ if let UiMode::OperationResult(result) = &app.mode {
 
 **Help popup (Ctrl+H)**:
 
-- **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.).
-- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows INSERT/COMMAND (`i` / Esc), **Ctrl+K** Actions, Tab/Enter/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes Ctrl+I/Esc INSERT/COMMAND, **Ctrl+K** trade actions, PgUp/PgDn/End chat scroll, **Shift+K** (reveal Shared key for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, it lists Enter Load, **Ctrl+L** Clear, **Esc** Dismiss error, **Ctrl+K** Actions, paste, scroll, and save-attachment shortcuts (Left/Right still change tabs).
+- **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.). On very narrow terminals the Help body wraps and keeps Actions/Clear discoverable (same skip-fit idea as keycap bars).
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows INSERT/COMMAND (`i` / Esc; SERBERO read-only), **Ctrl+K** Actions (letter selects, Enter confirms), Tab/Enter/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes Ctrl+I/Esc INSERT/COMMAND, **Ctrl+K** trade actions (letter selects, Enter confirms), PgUp/PgDn/End chat scroll, **Shift+K** (reveal Shared key for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, it lists Enter Load, **Ctrl+L** Clear (zeroizes attachment keys), **Esc** Dismiss error, **Ctrl+K** Actions (letter selects, Enter confirms), paste, scroll, and save-attachment shortcuts (Left/Right still change tabs).
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
 
@@ -269,8 +270,9 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
   - **Ctrl+K**, **i**/Insert, and COMMAND Shift chords are handled *before* chat input so they are never typed into the box
   - Dynamic input box that grows from 1 to 10 lines
   - Text wrapping with word boundary detection
-  - **INSERT / COMMAND**: Press **i** (or Insert) to type; **Esc** returns to COMMAND (draft kept). Titles show `Message / INSERT` or `Message / COMMAND`
-  - **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (works in both layers)
+  - **INSERT / COMMAND**: Press **i** (or Insert) on BUYER/SELLER to type; **Esc** returns to COMMAND (draft kept for same dispute/party). SERBERO is read-only
+  - **Draft ownership**: `admin_chat_draft_owner` — Enter send refuses a draft that no longer matches the live dispute/party
+  - **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (pinned dispute id; letter selects, Enter confirms)
 - **Copy to Clipboard**: Pressing `C` in a `PayInvoice` or `PayBondInvoice` notification, or in the My Trades **Shift+K** Shared key disclosure popup, uses the `arboard` crate (`handle_clipboard_copy` in `src/ui/key_handler/mod.rs`) to copy the invoice or the Shared key hex respectively. Only the Shared key is copyable from the disclosure popup — the signing key is never copied (and never displayed). The write runs synchronously and reports the real result: `copied_to_clipboard` (and the "✓ ... copied!" confirmation) is only set once `arboard::Clipboard::new()` and `set_text()` actually succeed; a failed write leaves the popup showing "Press C to copy" instead of a false success message. Persistence beyond that call is handled by the platform backend without blocking on it — the shared clipboard worker thread `arboard` starts on X11, or the background process `wl-clipboard-rs` detaches on Wayland.
 - **Exit Confirmation**: Pressing `Q` or selecting the Exit tab shows a confirmation popup before exiting the application. Use Left/Right to select Yes/No, Enter to confirm, or Esc to cancel.
 - **Help popup**: Press **Ctrl+H** (in normal or managing-dispute mode) to open a centered overlay with all keyboard shortcuts for the current tab. Press Esc, Enter, or Ctrl+H to close.
@@ -538,8 +540,8 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
 - **Attachments (send)**: **Ctrl+O** opens `UserSendAttachmentPicker` (`ratatui-explorer` in `src/ui/send_attachment_picker.rs`); **Enter** on a file enqueues `SendOrderAttachmentJob::FromPath` on `send_order_attachment_tx`. Backend in `src/util/send_attachment.rs`: validate → encrypt (shared key) → Blossom upload (NIP-24242 auth signed with **order trade key**) → shared-key DM. **Ctrl+Shift+O** enqueues `RetryPrepared` when `AppState.pending_order_attachment_sends` has the selected order (upload ok / DM failed). `sending_attachment_order_id` blocks duplicate sends while in flight; cleared only by attachment-specific `OperationResult` variants in `order_ch_mng.rs`, not by unrelated errors on `order_result_tx`.
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
 - **Keycap command bar + footer shortcuts (width-aware)**:
-  - **INSERT / COMMAND**: **Ctrl+I** / **i** / Insert enter INSERT (type freely); **Esc** returns to COMMAND (draft kept). Keycaps show `i Write` / `Enter Send · Esc Commands` accordingly.
-  - **Ctrl+K Actions**: trade-action list (Cancel / Fiat sent / Release / Dispute / …) — same outcomes as COMMAND Shift chords; works in INSERT and COMMAND.
+  - **INSERT / COMMAND**: **Ctrl+I** / **i** / Insert enter INSERT (type freely); **Esc** returns to COMMAND (draft kept). Keycaps show `i Write` / `Enter Send · Esc Commands` accordingly. `shortcut_bar` skips oversized groups so a long Retry cannot hide later Save/Send.
+  - **Ctrl+K Actions**: trade-action list (Cancel / Fiat sent / Release / Dispute / …) — same outcomes as COMMAND Shift chords; **letter selects, Enter confirms** (not immediate execute).
   - **Shift+C** cooperative cancel (YES/NO popup; COMMAND).
   - **Shift+F** mark fiat sent (YES/NO popup; COMMAND).
   - **Shift+R** release sats (YES/NO popup; COMMAND).
@@ -621,8 +623,9 @@ pub struct AdminChatLastSeen {
 #### UI Features
 
 - **Dispute selection**: `selected_dispute_id` + `selected_filtered_dispute` — send/finalize/attachments always target the sidebar highlight under the current filter.
-- **INSERT / COMMAND**: Press **i** (or Insert) to type; **Esc** returns to COMMAND. Aligned with My Trades keycap command bar.
-- **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (`src/ui/dispute_actions_popup.rs`).
+- **Draft ownership**: `admin_chat_draft_owner` cleared on ↑↓ / Tab / filter; Enter send validates ownership (`chat_helpers`).
+- **INSERT / COMMAND**: Press **i** (or Insert) on BUYER/SELLER to type; **Esc** returns to COMMAND. SERBERO command bar is read-only.
+- **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (`src/ui/dispute_actions_popup.rs`); dispute id pinned at open; letter selects, Enter confirms.
 - **Dynamic sizing**: Input box grows from 1 to 10 lines based on content.
 - **Text wrapping**: Intelligent word-boundary wrapping with trim behavior.
 - **Scrolling**:
@@ -645,7 +648,7 @@ The key handler processes input in this order:
 4. **Admin chat input** (INSERT only — `admin_chat_input_enabled`).
 5. Other character/form input.
 
-**Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, dispute INSERT/COMMAND + Ctrl+K), `src/ui/dispute_actions_popup.rs`.
+**Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, dispute INSERT/COMMAND + Ctrl+K), `src/ui/key_handler/chat_helpers.rs` (draft ownership), `src/ui/dispute_actions_popup.rs`.
 
 #### Kind-14 Chat Internals (Shared Key Model)
 

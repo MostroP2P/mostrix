@@ -19,7 +19,7 @@ pub fn observer_action_count() -> usize {
     OBSERVER_ACTION_ROWS.len()
 }
 
-/// Letter shortcut → row index.
+/// Letter → row index for highlight only (Enter confirms; `L` alone does not Clear).
 #[must_use]
 pub fn observer_action_index_for_key(c: char) -> Option<usize> {
     match c.to_ascii_lowercase() {
@@ -77,7 +77,7 @@ pub fn render_observer_actions_popup(f: &mut ratatui::Frame, selected_index: usi
 
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                "↑↓ select · letter jump · Enter",
+                "↑↓/letter select · Enter confirm",
                 Style::default().fg(Color::DarkGray),
             )]))
             .alignment(ratatui::layout::Alignment::Center),

@@ -1,8 +1,11 @@
 //! Admin disputes-in-progress UI.
 //!
 //! Shortcut hints use a one-row keycap command bar (`i` / Esc for INSERT /
-//! COMMAND, Ctrl+K Actions) with party, filter, and file hints on the chat
-//! border. The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
+//! COMMAND on BUYER/SELLER; SERBERO is read-only). Groups that do not fit are
+//! skipped so later shortcuts can still appear. Ctrl+K Actions pins the dispute
+//! id; letter selects, Enter confirms. Composer drafts are bound to
+//! `(dispute_id, party)`. Party, filter, and file hints sit on the chat border.
+//! The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
 
 use std::str::FromStr;
 
@@ -73,8 +76,9 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
         let key_text = format!(" {key} ");
         let label_text = format!(" {label}");
         let group_width = Span::raw(&key_text).width() + Span::raw(&label_text).width();
+        // Skip groups that do not fit; keep trying later groups.
         if used + gap + group_width > usize::from(width) {
-            break;
+            continue;
         }
         let key_style = if spans.is_empty() {
             Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
@@ -98,12 +102,14 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
 ///
 /// Finalized disputes show filter/remove/nav; managing disputes switch between
 /// INSERT (`Enter` Send / `Esc` Commands) and COMMAND (`i` Write), with
-/// Resolve/Recover/Filter/Remove in Ctrl+K Actions.
+/// Resolve/Recover/Filter/Remove in Ctrl+K Actions. SERBERO is read-only (no
+/// Write/Send).
 fn dispute_command_bar(
     width: u16,
     input_enabled: bool,
     is_finalized: bool,
     managing: bool,
+    serbero: bool,
 ) -> Line<'static> {
     if is_finalized {
         return shortcut_bar(
@@ -112,6 +118,17 @@ fn dispute_command_bar(
                 ("Ctrl+K", "Actions"),
                 ("Ctrl+H", "Help"),
                 ("↑↓", "Disputes"),
+            ],
+        );
+    }
+    if managing && serbero {
+        return shortcut_bar(
+            width,
+            &[
+                ("Tab", "Party"),
+                ("Ctrl+K", "Actions"),
+                ("Ctrl+H", "Help"),
+                ("Ctrl+C", "Copy"),
             ],
         );
     }
@@ -985,6 +1002,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
         }
 
         let managing = matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+        let serbero_active = !is_finalized && app.admin_show_solver_dms;
         if !is_finalized {
             if let Some((toast_msg, _)) = app.attachment_toast.as_ref() {
                 f.render_widget(
@@ -1000,6 +1018,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     app.admin_chat_input_enabled,
                     is_finalized,
                     managing,
+                    serbero_active,
                 )),
                 Rect::new(
                     footer_area.x,
@@ -1431,7 +1450,7 @@ mod tests {
     fn command_bar_and_copy_controls_fit_narrow_widths() {
         for width in 0..120 {
             for insert in [false, true] {
-                let line = super::dispute_command_bar(width, insert, false, true);
+                let line = super::dispute_command_bar(width, insert, false, true, false);
                 assert!(line.width() <= usize::from(width));
                 let text = line.to_string();
                 if width >= 28 {
@@ -1450,6 +1469,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn serbero_command_bar_is_read_only() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = vec![dispute("dip-serbero", "in-progress")];
+        app.selected_dispute_id = Some("dip-serbero".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.admin_show_solver_dms = true;
+        app.admin_chat_input_enabled = true;
+
+        let line = super::dispute_command_bar(120, true, false, true, true);
+        let text = line.to_string();
+        assert!(text.contains("Party"), "expected Tab Party: {text}");
+        assert!(text.contains("Actions"), "expected Actions: {text}");
+        assert!(
+            !text.contains("Write"),
+            "SERBERO must not show Write: {text}"
+        );
+        assert!(!text.contains("Send"), "SERBERO must not show Send: {text}");
+    }
+
+    #[test]
+    fn shortcut_bar_skips_oversized_group_and_keeps_later_fit() {
+        // A long first group that cannot fit must not suppress a later short group.
+        let hints = [
+            ("Ctrl+Shift+O", "Retry"),
+            ("Ctrl+S", "Save"),
+            ("Tab", "Peer"),
+        ];
+        let line = super::shortcut_bar(18, &hints);
+        let text = line.to_string();
+        assert!(
+            text.contains("Save") || text.contains("Peer") || text.contains("Tab"),
+            "expected a later short group after skipping Retry, got: {text}"
+        );
+        assert!(!text.contains("Retry"), "oversized Retry should be skipped");
     }
 
     #[test]

@@ -40,12 +40,13 @@ pub const HELP_DIP_SHIFT_R_RECOVER: &str =
     "Shift+R: Pick missing taken disputes to recover (↑↓ Space Enter)";
 /// INSERT / COMMAND for dispute chat (name kept for call-site stability; not Shift+I).
 pub const HELP_DIP_SHIFT_I_INPUT: &str =
-    "i / Insert: Enter INSERT (type message; capitals OK). Esc: leave → COMMAND";
+    "i / Insert: Enter INSERT on BUYER/SELLER (not SERBERO). Esc: leave → COMMAND";
 /// Ctrl+K dispute actions (same outcomes as COMMAND Shift/Delete shortcuts).
 pub const HELP_DIP_CTRL_K_ACTIONS: &str =
-    "Ctrl+K: Dispute actions (Resolve / Recover / Filter / Remove)";
+    "Ctrl+K: Dispute actions — letter selects, Enter confirms (Resolve / Recover / Filter / Remove)";
 pub const HELP_DIP_DELETE_LOCAL: &str = "Delete: Remove selected dispute from local DB (sidebar)";
-pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when INSERT)";
+pub const HELP_DIP_ENTER_SEND: &str =
+    "Enter: Send message (INSERT; draft must match live dispute/party)";
 #[cfg(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -116,10 +117,11 @@ pub const HELP_OBS_SCROLL_PAGE: &str = "PgUp/PgDn: Scroll page";
 /// Esc only clears the inline error; Shared key and messages stay (use Ctrl+L to wipe).
 pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Dismiss inline error (does not clear Shared key)";
 /// Full Observer wipe (`clear_observer_secrets`); keycap label is Clear, not Esc.
-pub const HELP_OBS_CTRL_L_CLEAR: &str = "Ctrl+L: Clear all (Shared key, messages, error)";
+pub const HELP_OBS_CTRL_L_CLEAR: &str =
+    "Ctrl+L: Clear all (Shared key, loaded pin, messages, attachment keys, error)";
 /// Ctrl+K Observer actions (Clear all / Save attachment / Dismiss error).
 pub const HELP_OBS_CTRL_K_ACTIONS: &str =
-    "Ctrl+K: Observer actions (Clear all / Save attachment / Dismiss error)";
+    "Ctrl+K: Observer actions — letter selects, Enter confirms (Clear / Save / Dismiss)";
 pub const HELP_OBS_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment";
 
 // Help popup lines (Settings)
@@ -155,7 +157,7 @@ pub const HELP_MY_TRADES_CTRL_I_INSERT: &str =
 pub const HELP_MY_TRADES_ESC_COMMAND: &str =
     "Esc: Leave INSERT → COMMAND (draft kept for this order/channel)";
 pub const HELP_MY_TRADES_CTRL_K_ACTIONS: &str =
-    "Ctrl+K: Trade actions (Fiat sent / Release / Cancel / …)";
+    "Ctrl+K: Trade actions — letter selects, Enter confirms (Fiat sent / Release / …)";
 pub const HELP_MY_TRADES_PASTE: &str =
     "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
 pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str =
