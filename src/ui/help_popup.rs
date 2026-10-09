@@ -549,8 +549,8 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 lines.push(HELP_DIP_DELETE_LOCAL.to_string());
                 lines.push(HELP_DIP_CTRL_S_ATTACH.to_string());
                 if !app.admin_show_solver_dms {
-                    lines.push(HELP_DIP_COPY.to_string());
-                    lines.push(HELP_DIP_COPY_KEYS.to_string());
+                    lines.push(HELP_CHAT_COPY.to_string());
+                    lines.push(HELP_CHAT_COPY_KEYS.to_string());
                 }
             } else {
                 lines.push(HELP_DIP_DELETE_LOCAL.to_string());
@@ -609,6 +609,8 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_MY_TRADES_ESC_COMMAND.to_string(),
                 HELP_MY_TRADES_CTRL_K_ACTIONS.to_string(),
                 HELP_MY_TRADES_PASTE.to_string(),
+                HELP_CHAT_COPY.to_string(),
+                HELP_CHAT_COPY_KEYS.to_string(),
                 HELP_MY_TRADES_SHIFT_C_CANCEL.to_string(),
                 HELP_MY_TRADES_SHIFT_F_FIAT_SENT.to_string(),
                 HELP_MY_TRADES_SHIFT_R_RELEASE.to_string(),

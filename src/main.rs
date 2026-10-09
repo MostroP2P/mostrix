@@ -311,7 +311,7 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
 }
 
 fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
-    if app.chat_copy_session.is_some() {
+    if app.chat_copy_session.is_some() || app.chat_copy_cancelled {
         return;
     }
     let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
@@ -1258,6 +1258,36 @@ mod own_reputation_refresh_tests {
 
 #[cfg(test)]
 mod paste_routing_tests {
+    #[test]
+    fn my_trades_copy_blocks_paste_and_resumes_original_draft() {
+        use crate::ui::key_handler::chat_copy;
+        use crate::ui::UserChatChannel;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            let mut app = chat_copy::tests::app_with_order_messages(channel);
+            app.order_chat_input_enabled = true;
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                |_| false,
+            );
+            super::apply_pasted_text_to_active_input(&mut app, "ignored");
+            assert_eq!(app.order_chat_input, "draft\n  untouched");
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                |_| false,
+            );
+            super::apply_pasted_text_to_active_input(&mut app, " pasted");
+            assert_eq!(app.order_chat_input, "draft\n  untouched pasted");
+            assert_eq!(
+                app.order_chat_draft_owner,
+                Some((uuid::Uuid::nil(), channel))
+            );
+        }
+    }
+
     #[test]
     fn chat_copy_blocks_bracketed_and_mouse_paste_without_changing_draft() {
         use crate::ui::key_handler::chat_copy;

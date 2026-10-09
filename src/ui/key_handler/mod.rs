@@ -285,6 +285,7 @@ fn order_chat_input_active(app: &AppState) -> bool {
     matches!(app.active_tab, Tab::User(UserTab::MyTrades))
         && app.mode.user_my_trades_interactive()
         && app.order_chat_input_enabled
+        && app.chat_copy_session.is_none()
 }
 
 /// Normalize clipboard / bracketed paste for chat: keep newlines and tabs, drop other controls.
@@ -2498,6 +2499,7 @@ mod key_handler_tests {
     use super::*;
     use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection, UserRole};
     use crossterm::event::KeyModifiers;
+    use uuid::Uuid;
 
     #[test]
     fn dispute_is_allowed_only_while_the_trade_is_under_way() {
@@ -3646,6 +3648,66 @@ mod key_handler_tests {
                 append_paste_to_admin_dispute_chat(&mut app, "paste"),
                 input_enabled
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn my_trades_copy_dispatch_blocks_actions_and_invalidated_enter() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            for input_enabled in [false, true] {
+                let mut app = chat_copy::tests::app_with_order_messages(channel);
+                app.order_chat_input_enabled = input_enabled;
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                )
+                .await;
+                for key in [
+                    KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+                    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                ] {
+                    dispatch_observer_test_key(&mut app, key).await;
+                }
+                assert!(!append_paste_to_order_chat(&mut app, "ignored"));
+                assert_eq!(chat_copy::selected_index(&app), Some(1));
+                assert_eq!(app.active_user_chat_channel, channel);
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                )
+                .await;
+                assert_eq!(app.order_chat_input_enabled, input_enabled);
+                assert_eq!(app.order_chat_input, "draft\n  untouched");
+                assert_eq!(app.order_chat_draft_owner, Some((Uuid::nil(), channel)));
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                )
+                .await;
+                let chats = if channel == UserChatChannel::Peer {
+                    &mut app.order_chats
+                } else {
+                    &mut app.user_dispute_chats
+                };
+                chats.get_mut(&Uuid::nil().to_string()).unwrap()[0].content = "changed".into();
+                chat_copy::validate_selection(&mut app);
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert!(app.chat_copy_session.is_none());
+                assert!(!app.chat_copy_cancelled);
+                assert!(app.mode.user_my_trades_interactive());
+                assert_eq!(app.order_chat_input, "draft\n  untouched");
+                assert_eq!(app.order_chat_draft_owner, Some((Uuid::nil(), channel)));
+                assert_eq!(append_paste_to_order_chat(&mut app, "paste"), input_enabled);
+            }
         }
     }
 

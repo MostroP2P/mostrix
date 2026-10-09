@@ -9,10 +9,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 use crate::ui::constants::{
-    FOOTER_CTRL_O_SEND_FILE, FOOTER_CTRL_SHIFT_O_RETRY, FOOTER_CTRL_S_SAVE_FILE,
-    FOOTER_MYTRADES_CTRL_I_INSERT, FOOTER_MYTRADES_CTRL_K_ACTIONS, FOOTER_MYTRADES_END_BOTTOM,
-    FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_ESC_COMMAND, FOOTER_MYTRADES_PASTE,
-    FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT, FOOTER_MYTRADES_SELECT_ORDER,
+    CHAT_COPY_HINT, CHAT_COPY_START, FOOTER_CTRL_O_SEND_FILE, FOOTER_CTRL_SHIFT_O_RETRY,
+    FOOTER_CTRL_S_SAVE_FILE, FOOTER_MYTRADES_CTRL_I_INSERT, FOOTER_MYTRADES_CTRL_K_ACTIONS,
+    FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_ESC_COMMAND,
+    FOOTER_MYTRADES_PASTE, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT, FOOTER_MYTRADES_SELECT_ORDER,
     FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_D_DISPUTE,
     FOOTER_MYTRADES_SHIFT_F_FIAT_SENT, FOOTER_MYTRADES_SHIFT_K_KCONV,
     FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_U_REFRESH, FOOTER_MYTRADES_SHIFT_V_RATE,
@@ -20,8 +20,9 @@ use crate::ui::constants::{
 };
 use crate::ui::helpers::{
     active_order_chat_list_snapshot, count_order_attachments, format_local_timestamp,
-    format_user_rating_compact,
+    format_user_rating_compact, ChatScrollViewContent,
 };
+use crate::ui::key_handler::chat_copy;
 use crate::ui::UserOrderChatMessage;
 use crate::ui::{AppState, UserChatChannel, UserChatSender};
 use crate::ui::{BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -372,7 +373,7 @@ fn build_order_chat_content(
     messages: &[UserOrderChatMessage],
     content_width: u16,
     channel: UserChatChannel,
-) -> (Vec<Line<'static>>, u16, Vec<usize>) {
+) -> ChatScrollViewContent {
     fn wrap_text_to_lines(content: &str, max_width: u16) -> Vec<String> {
         if max_width == 0 {
             return vec![String::new()];
@@ -477,7 +478,12 @@ fn build_order_chat_content(
             Style::default().fg(Color::Gray),
         )));
     }
-    (lines, content_width.max(1), starts)
+    ChatScrollViewContent {
+        content_height: lines.len().min(u16::MAX as usize) as u16,
+        lines,
+        content_width: content_width.max(1),
+        line_start_per_message: starts,
+    }
 }
 
 fn trailing_order_chat_input(input: &str, visible_width: u16) -> String {
@@ -502,22 +508,52 @@ fn trailing_order_chat_input(input: &str, visible_width: u16) -> String {
 }
 
 pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
+    chat_copy::validate_selection(app);
     let active_orders = active_order_chat_list_snapshot(app);
 
+    let selected_idx = app
+        .selected_order_chat_idx
+        .min(active_orders.len().saturating_sub(1));
+    let solver_available = active_orders.get(selected_idx).is_some_and(|selected| {
+        selected.solver_pubkey.is_some()
+            || Uuid::parse_str(&selected.order_id)
+                .ok()
+                .and_then(|id| app.order_chat_static.get(&id))
+                .is_some_and(|header| header.solver_pubkey.is_some())
+    });
+    if !active_orders.is_empty() && !solver_available {
+        app.active_user_chat_channel = UserChatChannel::Peer;
+    }
+    if let Some(selected) = active_orders.get(selected_idx) {
+        chat_copy::validate_order_view(app, &selected.order_id, app.active_user_chat_channel);
+    }
+    let copy_selection = chat_copy::selected_index(app);
+    let copy_feedback = chat_copy::feedback_text(app);
+    let copy_context = copy_selection.is_some() || copy_feedback.is_some();
     let chunks = Layout::new(
         Direction::Horizontal,
         [Constraint::Percentage(22), Constraint::Percentage(78)],
     )
     .split(area);
-    let sidebar_area = chunks[0];
-    let main_area = chunks[1];
-
-    let selected_idx = if active_orders.is_empty() {
-        0
+    let sidebar_area = if copy_context && area.width < 60 {
+        Rect::default()
     } else {
-        app.selected_order_chat_idx
-            .min(active_orders.len().saturating_sub(1))
+        chunks[0]
     };
+    let main_area = if copy_context && area.width < 60 {
+        area
+    } else {
+        chunks[1]
+    };
+    let copy_hint = if main_area.width < 34 {
+        "↑↓ Select\nEnter Copy\nEsc Cancel"
+    } else {
+        CHAT_COPY_HINT
+    };
+    let copy_footer_height = Paragraph::new(copy_feedback.unwrap_or(copy_hint))
+        .wrap(Wrap { trim: true })
+        .line_count(main_area.width.max(1))
+        .min(3) as u16;
 
     let sidebar_block = Block::default()
         .title("Orders In Progress")
@@ -569,8 +605,17 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     f.render_widget(List::new(items).block(sidebar_block), sidebar_area);
 
     let selected = &active_orders[selected_idx];
-    let (max_header, input_height, reserved_footer) =
+    let (mut max_header, mut input_height, reserved_footer) =
         allocate_order_chat_vertical(main_area.height, app.attachment_toast.is_some());
+    if copy_context {
+        let spare = main_area.height.saturating_sub(copy_footer_height + 4);
+        input_height = if spare >= 3 { 3 } else { 0 };
+        max_header = if spare >= 6 {
+            spare.saturating_sub(input_height).min(7)
+        } else {
+            0
+        };
+    }
 
     let status_label = selected
         .status
@@ -579,13 +624,6 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let static_h = Uuid::parse_str(&selected.order_id)
         .ok()
         .and_then(|id| app.order_chat_static.get(&id));
-    let solver_available = selected.solver_pubkey.is_some()
-        || static_h
-            .and_then(|header| header.solver_pubkey.as_ref())
-            .is_some();
-    if !solver_available {
-        app.active_user_chat_channel = UserChatChannel::Peer;
-    }
     let active_channel = app.active_user_chat_channel;
     let order_kind = static_h
         .and_then(|h| h.kind.map(|k| k.to_string()))
@@ -721,7 +759,9 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         .saturating_sub(header_height.saturating_add(input_height));
     // Grow footer only when the comfort chat reserve still fits; never reintroduce
     // a hint row that was dropped to keep one chat body row.
-    let footer_height: u16 = if reserved_footer == 0 {
+    let footer_height: u16 = if copy_context {
+        copy_footer_height
+    } else if reserved_footer == 0 {
         0
     } else if spare_below_header_input >= 3 + ORDER_INFO_CHAT_COMFORT + toast_extra {
         3 + toast_extra
@@ -798,7 +838,11 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     .cloned()
     .unwrap_or_default();
     let message_count = chat_messages.len();
-    let chat_title = if message_count > 0 {
+    let chat_title = if copy_selection.is_some() {
+        format!("Copy: {active_channel}")
+    } else if app.mode.user_my_trades_interactive() && main_area.width < 50 && footer_height == 0 {
+        format!("{active_channel} Chat | {CHAT_COPY_START}")
+    } else if message_count > 0 {
         if file_count > 0 {
             format!(
                 "{} Chat ({} messages, {} file(s))",
@@ -822,22 +866,22 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
 
     // Match disputes/observer chat: content width reserves one column for the vertical scrollbar.
     let content_width = chat_inner.width.saturating_sub(1).max(1);
-    let (chat_lines, _, line_starts) =
-        build_order_chat_content(&chat_messages, content_width, active_channel);
-    app.order_chat_line_starts = line_starts;
-    let content_height = chat_lines.len().min(u16::MAX as usize) as u16;
+    let mut content = build_order_chat_content(&chat_messages, content_width, active_channel);
+    let selected_rows = content.select_message(copy_selection);
+    app.order_chat_line_starts = content.line_start_per_message.clone();
+    let content_height = content.content_height;
 
     if message_count > 0 {
         let order_id_key = selected.order_id.clone();
         if let Some((ref prev_id, prev_channel, last_count)) = app.order_chat_scroll_tracker {
             if *prev_id == order_id_key && prev_channel == active_channel {
-                if message_count > last_count {
+                if message_count > last_count && copy_selection.is_none() {
                     app.order_chat_scrollview_state.scroll_to_bottom();
                 }
-            } else {
+            } else if copy_selection.is_none() {
                 app.order_chat_scrollview_state.scroll_to_bottom();
             }
-        } else {
+        } else if copy_selection.is_none() {
             app.order_chat_scrollview_state.scroll_to_bottom();
         }
         app.order_chat_scroll_tracker = Some((order_id_key, active_channel, message_count));
@@ -845,11 +889,18 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         app.order_chat_scroll_tracker = Some((selected.order_id.clone(), active_channel, 0));
     }
 
+    if let Some(selected_rows) = selected_rows {
+        content.keep_selection_visible(
+            selected_rows,
+            chat_inner.height,
+            &mut app.order_chat_scrollview_state,
+        );
+    }
     let mut scroll_view = ScrollView::new(Size::new(content_width, content_height.max(1)))
         .vertical_scrollbar_visibility(ScrollbarVisibility::Always);
     let content_rect = Rect::new(0, 0, content_width, content_height.max(1));
     scroll_view.render_widget(
-        Paragraph::new(chat_lines).wrap(Wrap { trim: true }),
+        Paragraph::new(content.lines).wrap(Wrap { trim: true }),
         content_rect,
     );
     f.render_stateful_widget(
@@ -858,9 +909,13 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         &mut app.order_chat_scrollview_state,
     );
 
-    let input_active = app.mode.user_my_trades_interactive() && app.order_chat_input_enabled;
+    let input_active = app.mode.user_my_trades_interactive()
+        && app.order_chat_input_enabled
+        && copy_selection.is_none();
     let input_width = main_chunks[2].width;
-    let input_title = if app.order_chat_input_enabled {
+    let input_title = if copy_selection.is_some() {
+        "Message (copying)"
+    } else if app.order_chat_input_enabled {
         if input_width < 36 {
             "INSERT · Esc"
         } else {
@@ -892,6 +947,16 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         main_chunks[2],
     );
 
+    if copy_context {
+        f.render_widget(
+            Paragraph::new(copy_feedback.unwrap_or(copy_hint))
+                .style(Style::default().fg(PRIMARY_COLOR))
+                .wrap(Wrap { trim: true }),
+            main_chunks[3],
+        );
+        return;
+    }
+
     if footer_height > 0 {
         // Footer: one Paragraph over the full footer rect so `wrap` can use every reserved row.
         let footer_area = main_chunks[3];
@@ -908,7 +973,7 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         let has_toast = app.attachment_toast.is_some();
         let hint_lines = base_footer_lines;
 
-        let footer_body: Text<'static> = if footer_width < 50 {
+        let mut footer_body: Text<'static> = if footer_width < 50 {
             Text::raw(format!("{HELP_KEY}{attach_hints}"))
         } else if hint_lines >= 3 {
             if app.order_chat_input_enabled {
@@ -1018,6 +1083,14 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             Text::raw(format!("{base}{attach_hints}"))
         };
 
+        if app.mode.user_my_trades_interactive() {
+            if let Some(first) = footer_body.lines.first_mut() {
+                first
+                    .spans
+                    .insert(0, Span::raw(format!("{CHAT_COPY_START} | ")));
+            }
+        }
+
         if has_toast {
             let chunks = Layout::new(
                 Direction::Vertical,
@@ -1072,18 +1145,161 @@ mod tests {
     };
     use crate::ui::draw::ui_draw;
     use crate::ui::helpers::OrderChatListItem;
+    use crate::ui::key_handler::chat_copy;
     use crate::ui::key_handler::handle_tab_navigation;
+    use crate::ui::PRIMARY_COLOR;
     use crate::ui::{
         AppState, OrderChatStaticHeader, Tab, UiMode, UserChatChannel, UserChatSender, UserMode,
         UserOrderChatMessage, UserRole, UserTab,
     };
     use crossterm::event::KeyCode;
+    use crossterm::event::{KeyEvent, KeyModifiers};
     use mostro_core::prelude::{Dispute, Status, UserInfo};
     use ratatui::backend::TestBackend;
     use ratatui::text::Span;
     use ratatui::Terminal;
     use std::sync::{Arc, Mutex};
     use uuid::Uuid;
+
+    fn begin_copy(app: &mut AppState) {
+        assert!(chat_copy::handle_key_with(
+            app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| false
+        ));
+    }
+
+    fn render_copy(app: &mut AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), app))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn highlighted_word(buffer: &ratatui::buffer::Buffer, word: &str) -> bool {
+        (0..buffer.area.height).any(|row| {
+            (0..buffer.area.width.saturating_sub(word.len() as u16)).any(|column| {
+                word.chars().enumerate().all(|(offset, character)| {
+                    let cell = &buffer[(column + offset as u16, row)];
+                    cell.symbol() == character.to_string() && cell.bg == PRIMARY_COLOR
+                })
+            })
+        })
+    }
+
+    #[test]
+    fn my_trades_copy_highlight_and_hints_survive_resize_in_both_channels() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            let mut app = chat_copy::tests::app_with_order_messages(channel);
+            app.order_chat_input_enabled = true;
+            begin_copy(&mut app);
+            for (width, height) in [(120, 28), (80, 12), (40, 12), (30, 8), (120, 28)] {
+                let buffer = render_copy(&mut app, width, height);
+                assert!(
+                    highlighted_word(&buffer, "first"),
+                    "selection missing at {width}x{height}"
+                );
+                assert!(buffer_contains(&buffer, "Enter"));
+                assert!(buffer_contains(&buffer, "Esc"));
+                assert_eq!(chat_copy::selected_index(&app), Some(0));
+                assert_eq!(app.order_chat_input, "draft\n  untouched");
+                assert_eq!(app.order_chat_draft_owner, Some((Uuid::nil(), channel)));
+            }
+            for (width, height) in [(0, 0), (1, 1), (8, 3)] {
+                render_copy(&mut app, width, height);
+            }
+        }
+    }
+
+    #[test]
+    fn my_trades_copy_last_message_stays_visible_after_append() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            let mut app = chat_copy::tests::app_with_order_messages(channel);
+            let chats = if channel == UserChatChannel::Peer {
+                &mut app.order_chats
+            } else {
+                &mut app.user_dispute_chats
+            };
+            chats.get_mut(&Uuid::nil().to_string()).unwrap()[0].content =
+                "wrapped words ".repeat(60);
+            chats.get_mut(&Uuid::nil().to_string()).unwrap()[1].content = "last body tail".into();
+            begin_copy(&mut app);
+            render_copy(&mut app, 60, 12);
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                |_| false,
+            );
+            let buffer = render_copy(&mut app, 60, 12);
+            assert!(highlighted_word(&buffer, "tail"));
+            assert!(app.order_chat_scrollview_state.offset().y > 0);
+            let chats = if channel == UserChatChannel::Peer {
+                &mut app.order_chats
+            } else {
+                &mut app.user_dispute_chats
+            };
+            let messages = chats.get_mut(&Uuid::nil().to_string()).unwrap();
+            let mut incoming = messages[0].clone();
+            incoming.content = "incoming ".repeat(60);
+            messages.push(incoming);
+            let buffer = render_copy(&mut app, 60, 12);
+            assert!(highlighted_word(&buffer, "tail"));
+            assert_eq!(chat_copy::selected_index(&app), Some(1));
+        }
+    }
+
+    #[test]
+    fn my_trades_copy_feedback_and_cancel_restore_composer() {
+        for success in [true, false] {
+            let mut app = chat_copy::tests::app_with_order_messages(UserChatChannel::Solver);
+            app.order_chat_input_enabled = true;
+            begin_copy(&mut app);
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                |_| success,
+            );
+            let buffer = render_copy(&mut app, 40, 12);
+            assert!(buffer_contains(
+                &buffer,
+                if success {
+                    "Copied to clipboard"
+                } else {
+                    "Clipboard unavailable"
+                }
+            ));
+            assert!(!highlighted_word(&buffer, "first"));
+            begin_copy(&mut app);
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                |_| false,
+            );
+            let buffer = render_copy(&mut app, 80, 24);
+            assert!(buffer_contains(&buffer, "INSERT"));
+            assert_eq!(app.order_chat_input, "draft\n  untouched");
+        }
+    }
+
+    #[test]
+    fn my_trades_copy_invalidation_during_render_consumes_enter() {
+        let mut app = chat_copy::tests::app_with_order_messages(UserChatChannel::Peer);
+        app.order_chat_input_enabled = true;
+        begin_copy(&mut app);
+        app.order_chats.get_mut(&Uuid::nil().to_string()).unwrap()[0].content = "changed".into();
+        render_copy(&mut app, 80, 24);
+        assert!(app.chat_copy_session.is_none());
+        assert!(
+            chat_copy::handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                |_| panic!("invalidated selection must not copy"),
+            ),
+            "Enter must not fall through to sending the draft after render invalidates selection"
+        );
+        assert_eq!(app.order_chat_input, "draft\n  untouched");
+    }
 
     #[test]
     fn render_message_box_title_reflects_insert_vs_command() {

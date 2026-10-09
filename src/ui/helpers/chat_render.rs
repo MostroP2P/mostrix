@@ -168,7 +168,9 @@ impl ChatScrollViewContent {
                 );
             }
             if selected == Some(index) {
-                selected_rows = Some(message_start..rows.saturating_sub(1).max(message_start + 1));
+                let separator = usize::from(self.lines[end - 1].width() == 0);
+                selected_rows =
+                    Some(message_start..rows.saturating_sub(separator).max(message_start + 1));
             }
         }
         if !logical_starts.is_empty() {

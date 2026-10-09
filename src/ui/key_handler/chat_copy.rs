@@ -1,16 +1,19 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::ui::helpers::{message_visible_for_party, selected_filtered_dispute};
+use crate::ui::key_handler::chat_helpers::live_order_chat_draft_target;
 use crate::ui::key_handler::handle_clipboard_copy;
 use crate::ui::{
-    AdminMode, AdminTab, AppState, ChatParty, ChatSender, DisputeChatMessage, DisputeFilter, Tab,
-    UiMode, UserRole,
+    AdminMode, AdminTab, AppState, ChatAttachment, ChatParty, ChatSender, DisputeFilter, Tab,
+    UiMode, UserChatChannel, UserChatSender, UserRole, UserTab,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChatCopyTarget {
     Dispute { id: String, party: ChatParty },
+    Order { id: Uuid, channel: UserChatChannel },
 }
 
 pub(crate) struct ChatCopySession {
@@ -25,6 +28,13 @@ pub(crate) struct ChatCopyFeedback {
 }
 
 fn focused_target(app: &AppState) -> Option<ChatCopyTarget> {
+    if app.user_role == UserRole::User
+        && app.active_tab == Tab::User(UserTab::MyTrades)
+        && app.mode.user_my_trades_interactive()
+    {
+        return live_order_chat_draft_target(app)
+            .map(|(id, channel)| ChatCopyTarget::Order { id, channel });
+    }
     if app.user_role != UserRole::Admin
         || app.active_tab != Tab::Admin(AdminTab::DisputesInProgress)
         || !matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
@@ -44,27 +54,56 @@ fn focused_target(app: &AppState) -> Option<ChatCopyTarget> {
         })
 }
 
+struct CopyMessage<'a> {
+    content: &'a str,
+    attachment: Option<&'a ChatAttachment>,
+    timestamp: i64,
+    sender: u8,
+}
+
 fn messages<'a>(
     app: &'a AppState,
     target: &ChatCopyTarget,
-) -> impl Iterator<Item = &'a DisputeChatMessage> {
-    let ChatCopyTarget::Dispute { id, party } = target;
-    let party = *party;
-    app.admin_dispute_chats
-        .get(id)
+) -> impl Iterator<Item = CopyMessage<'a>> {
+    let (disputes, orders, party) = match target {
+        ChatCopyTarget::Dispute { id, party } => (app.admin_dispute_chats.get(id), None, *party),
+        ChatCopyTarget::Order { id, channel } => {
+            let orders = match channel {
+                UserChatChannel::Peer => app.order_chats.get(&id.to_string()),
+                UserChatChannel::Solver => app.user_dispute_chats.get(&id.to_string()),
+            };
+            (None, orders, ChatParty::Buyer)
+        }
+    };
+    disputes
         .into_iter()
         .flatten()
         .filter(move |message| message_visible_for_party(message, party))
+        .map(|message| CopyMessage {
+            content: &message.content,
+            attachment: message.attachment.as_ref(),
+            timestamp: message.timestamp,
+            sender: match message.sender {
+                ChatSender::Admin => 0,
+                ChatSender::Buyer => 1,
+                ChatSender::Seller => 2,
+            },
+        })
+        .chain(orders.into_iter().flatten().map(|message| CopyMessage {
+            content: &message.content,
+            attachment: message.attachment.as_ref(),
+            timestamp: message.timestamp,
+            sender: match message.sender {
+                UserChatSender::You => 0,
+                UserChatSender::Peer => 1,
+            },
+        }))
 }
 
-fn fingerprint(message: &DisputeChatMessage) -> [u8; 32] {
+fn fingerprint(message: CopyMessage<'_>) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(message.timestamp.to_le_bytes());
-    digest.update([match message.sender {
-        ChatSender::Admin => 0,
-        ChatSender::Buyer => 1,
-        ChatSender::Seller => 2,
-    }]);
+    digest.update([message.sender]);
     digest.update(message.content.len().to_le_bytes());
     digest.update(message.content.as_bytes());
     if let Some(attachment) = &message.attachment {
@@ -85,6 +124,7 @@ pub(crate) fn validate_selection(app: &mut AppState) {
     });
     if !valid {
         app.chat_copy_session = None;
+        app.chat_copy_cancelled = true;
     }
 }
 
@@ -92,6 +132,27 @@ pub(crate) fn selected_index(app: &AppState) -> Option<usize> {
     app.chat_copy_session
         .as_ref()
         .map(|session| session.selected_index)
+}
+
+pub(crate) fn validate_order_view(app: &mut AppState, order_id: &str, channel: UserChatChannel) {
+    let displayed = Uuid::parse_str(order_id)
+        .ok()
+        .map(|id| ChatCopyTarget::Order { id, channel });
+    if app
+        .chat_copy_session
+        .as_ref()
+        .is_some_and(|session| Some(&session.target) != displayed.as_ref())
+    {
+        app.chat_copy_session = None;
+        app.chat_copy_cancelled = true;
+    }
+    if app
+        .chat_copy_feedback
+        .as_ref()
+        .is_some_and(|feedback| Some(&feedback.target) != displayed.as_ref())
+    {
+        app.chat_copy_feedback = None;
+    }
 }
 
 pub(crate) fn feedback_text(app: &AppState) -> Option<&'static str> {
@@ -109,9 +170,8 @@ pub(crate) fn handle_key_with(
     copy: impl FnOnce(String) -> bool,
 ) -> bool {
     app.chat_copy_feedback = None;
-    let was_selecting = app.chat_copy_session.is_some();
     validate_selection(app);
-    if was_selecting && app.chat_copy_session.is_none() {
+    if std::mem::take(&mut app.chat_copy_cancelled) {
         return true;
     }
 
@@ -125,7 +185,7 @@ pub(crate) fn handle_key_with(
                         Some(attachment) => {
                             (!attachment.filename.is_empty()).then(|| attachment.filename.clone())
                         }
-                        None => Some(message.content.clone()),
+                        None => Some(message.content.to_owned()),
                     });
                 let feedback = match text {
                     Some(text) => {
@@ -190,7 +250,212 @@ pub(crate) fn handle_key_with(
 pub(crate) mod tests {
     use super::*;
     use crate::models::AdminDispute;
-    use crate::ui::{ChatAttachment, ChatAttachmentType};
+    use crate::ui::helpers::OrderChatListItem;
+    use crate::ui::key_handler::chat_helpers::sync_order_chat_draft_to_live_target;
+    use crate::ui::{ChatAttachmentType, DisputeChatMessage, UserMode, UserOrderChatMessage};
+    use mostro_core::prelude::Status;
+
+    pub(crate) fn app_with_order_messages(channel: UserChatChannel) -> AppState {
+        let mut app = AppState::new(UserRole::User);
+        app.active_tab = Tab::User(UserTab::MyTrades);
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        app.active_user_chat_channel = channel;
+        app.order_chat_input = "draft\n  untouched".into();
+        app.order_chat_draft_owner = Some((Uuid::nil(), channel));
+        app.my_trades_maker_book.push(OrderChatListItem {
+            order_id: Uuid::nil().to_string(),
+            status: Some(Status::Dispute),
+            amount: Some(1000),
+            fiat: Some((10, "USD".into())),
+            trade_index: Some(1),
+            payment_method: Some("cash".into()),
+            premium: Some(0),
+            buyer_trade_pubkey: None,
+            seller_trade_pubkey: None,
+            buyer_reputation: None,
+            seller_reputation: None,
+            solver_pubkey: Some("solver".into()),
+            dispute_id: None,
+        });
+        for (chats, name) in [
+            (&mut app.order_chats, "peer"),
+            (&mut app.user_dispute_chats, "solver"),
+        ] {
+            chats.insert(
+                Uuid::nil().to_string(),
+                vec![
+                    UserOrderChatMessage {
+                        sender: UserChatSender::Peer,
+                        content: format!("  {name} first\n\tmessage \u{00e9}\u{754c}  "),
+                        timestamp: 1,
+                        attachment: None,
+                    },
+                    UserOrderChatMessage {
+                        sender: UserChatSender::You,
+                        content: format!("{name} last"),
+                        timestamp: 2,
+                        attachment: None,
+                    },
+                ],
+            );
+        }
+        app
+    }
+
+    #[test]
+    fn my_trades_copy_preserves_draft_owner_and_layer_in_both_channels() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            for input_enabled in [false, true] {
+                for exit in [KeyCode::Esc, KeyCode::Enter] {
+                    let mut app = app_with_order_messages(channel);
+                    app.order_chat_input_enabled = input_enabled;
+                    let expected = match channel {
+                        UserChatChannel::Peer => {
+                            app.order_chats[&Uuid::nil().to_string()][0].content.clone()
+                        }
+                        UserChatChannel::Solver => app.user_dispute_chats[&Uuid::nil().to_string()]
+                            [0]
+                        .content
+                        .clone(),
+                    };
+                    enter_selection(&mut app);
+                    assert_eq!(selected_index(&app), Some(0));
+                    press(&mut app, KeyCode::Up);
+                    press(&mut app, KeyCode::Tab);
+                    press(&mut app, KeyCode::Char('x'));
+                    let mut copied = false;
+                    assert!(handle_key_with(
+                        &mut app,
+                        &KeyEvent::new(exit, KeyModifiers::NONE),
+                        |text| {
+                            assert_eq!(text, expected);
+                            copied = true;
+                            true
+                        }
+                    ));
+                    assert_eq!(copied, exit == KeyCode::Enter);
+                    assert!(app.chat_copy_session.is_none());
+                    assert_eq!(app.order_chat_input, "draft\n  untouched");
+                    assert_eq!(app.order_chat_draft_owner, Some((Uuid::nil(), channel)));
+                    assert_eq!(app.order_chat_input_enabled, input_enabled);
+                    assert_eq!(app.active_user_chat_channel, channel);
+                    assert!(app.mode.user_my_trades_interactive());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn my_trades_copy_cancels_when_sidebar_reorders_or_channel_changes() {
+        for reorder in [true, false] {
+            let mut app = app_with_order_messages(UserChatChannel::Peer);
+            enter_selection(&mut app);
+            if reorder {
+                let mut other = app.my_trades_maker_book[0].clone();
+                other.order_id = Uuid::from_u128(2).to_string();
+                other.trade_index = Some(2);
+                app.my_trades_maker_book.insert(0, other);
+            } else {
+                app.active_user_chat_channel = UserChatChannel::Solver;
+            }
+            assert_ne!(
+                live_order_chat_draft_target(&app),
+                Some((Uuid::nil(), UserChatChannel::Peer))
+            );
+            press(&mut app, KeyCode::Enter);
+            assert!(app.chat_copy_session.is_none());
+            sync_order_chat_draft_to_live_target(&mut app);
+            assert!(app.order_chat_input.is_empty());
+            assert!(app.order_chat_draft_owner.is_none());
+        }
+    }
+
+    #[test]
+    fn my_trades_copy_failure_and_empty_chat_leave_composer_untouched() {
+        let mut app = app_with_order_messages(UserChatChannel::Solver);
+        enter_selection(&mut app);
+        assert!(handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            |_| false
+        ));
+        assert_eq!(feedback_text(&app), Some("Clipboard unavailable"));
+        app.user_dispute_chats.clear();
+        enter_selection(&mut app);
+        assert!(app.chat_copy_session.is_none());
+        assert_eq!(feedback_text(&app), Some("No messages to copy"));
+        assert_eq!(app.order_chat_input, "draft\n  untouched");
+        assert_eq!(
+            app.order_chat_draft_owner,
+            Some((Uuid::nil(), UserChatChannel::Solver))
+        );
+    }
+
+    #[test]
+    fn my_trades_copy_navigation_copies_last_text_or_attachment_filename() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            for attachment in [false, true] {
+                let mut app = app_with_order_messages(channel);
+                let chats = if channel == UserChatChannel::Peer {
+                    &mut app.order_chats
+                } else {
+                    &mut app.user_dispute_chats
+                };
+                let message = &mut chats.get_mut(&Uuid::nil().to_string()).unwrap()[1];
+                message.content = "  last\ntext\t  ".into();
+                if attachment {
+                    message.attachment = Some(ChatAttachment {
+                        blossom_url: "https://example.com/blob".into(),
+                        filename: "receipt.txt".into(),
+                        mime_type: None,
+                        file_type: ChatAttachmentType::File,
+                        decryption_key: None,
+                    });
+                }
+                enter_selection(&mut app);
+                press(&mut app, KeyCode::Up);
+                assert_eq!(selected_index(&app), Some(0));
+                press(&mut app, KeyCode::Down);
+                press(&mut app, KeyCode::Down);
+                assert_eq!(selected_index(&app), Some(1));
+                assert!(handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                    |text| {
+                        assert_eq!(
+                            text,
+                            if attachment {
+                                "receipt.txt"
+                            } else {
+                                "  last\ntext\t  "
+                            }
+                        );
+                        true
+                    }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn my_trades_copy_ignores_popups_and_cancels_removed_order() {
+        let mut app = app_with_order_messages(UserChatChannel::Peer);
+        app.mode = UiMode::HelpPopup(app.active_tab, Box::new(app.mode.clone()));
+        assert!(!handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| false
+        ));
+        assert!(app.chat_copy_session.is_none());
+        app.mode = UiMode::UserMode(UserMode::Normal);
+        enter_selection(&mut app);
+        app.my_trades_maker_book.clear();
+        press(&mut app, KeyCode::Enter);
+        assert!(app.chat_copy_session.is_none());
+        sync_order_chat_draft_to_live_target(&mut app);
+        assert!(app.order_chat_input.is_empty());
+        assert!(app.order_chat_draft_owner.is_none());
+    }
 
     pub(crate) fn app_with_messages() -> AppState {
         let mut app = AppState::new(UserRole::Admin);
