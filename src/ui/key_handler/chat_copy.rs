@@ -14,12 +14,14 @@ use crate::ui::{
 pub(crate) enum ChatCopyTarget {
     Dispute { id: String, party: ChatParty },
     Order { id: Uuid, channel: UserChatChannel },
+    SolverDm { dispute_id: String },
 }
 
 pub(crate) struct ChatCopySession {
     target: ChatCopyTarget,
     selected_index: usize,
     fingerprint: [u8; 32],
+    event_id: Option<String>,
 }
 
 pub(crate) struct ChatCopyFeedback {
@@ -38,7 +40,6 @@ fn focused_target(app: &AppState) -> Option<ChatCopyTarget> {
     if app.user_role != UserRole::Admin
         || app.active_tab != Tab::Admin(AdminTab::DisputesInProgress)
         || !matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
-        || app.admin_show_solver_dms
         || app.dispute_filter != DisputeFilter::InProgress
     {
         return None;
@@ -48,13 +49,22 @@ fn focused_target(app: &AppState) -> Option<ChatCopyTarget> {
             !dispute.is_finalized()
                 && app.selected_dispute_id.as_deref() == Some(dispute.dispute_id.as_str())
         })
-        .map(|dispute| ChatCopyTarget::Dispute {
-            id: dispute.dispute_id,
-            party: app.active_chat_party,
+        .map(|dispute| {
+            if app.admin_show_solver_dms {
+                ChatCopyTarget::SolverDm {
+                    dispute_id: dispute.dispute_id,
+                }
+            } else {
+                ChatCopyTarget::Dispute {
+                    id: dispute.dispute_id,
+                    party: app.active_chat_party,
+                }
+            }
         })
 }
 
 struct CopyMessage<'a> {
+    event_id: Option<&'a str>,
     content: &'a str,
     attachment: Option<&'a ChatAttachment>,
     timestamp: i64,
@@ -65,14 +75,19 @@ fn messages<'a>(
     app: &'a AppState,
     target: &ChatCopyTarget,
 ) -> impl Iterator<Item = CopyMessage<'a>> {
-    let (disputes, orders, party) = match target {
-        ChatCopyTarget::Dispute { id, party } => (app.admin_dispute_chats.get(id), None, *party),
+    let (disputes, orders, solver_dms, party) = match target {
+        ChatCopyTarget::Dispute { id, party } => {
+            (app.admin_dispute_chats.get(id), None, None, *party)
+        }
         ChatCopyTarget::Order { id, channel } => {
             let orders = match channel {
                 UserChatChannel::Peer => app.order_chats.get(&id.to_string()),
                 UserChatChannel::Solver => app.user_dispute_chats.get(&id.to_string()),
             };
-            (None, orders, ChatParty::Buyer)
+            (None, orders, None, ChatParty::Buyer)
+        }
+        ChatCopyTarget::SolverDm { dispute_id } => {
+            (None, None, app.solver_dms.get(dispute_id), ChatParty::Buyer)
         }
     };
     disputes
@@ -80,6 +95,7 @@ fn messages<'a>(
         .flatten()
         .filter(move |message| message_visible_for_party(message, party))
         .map(|message| CopyMessage {
+            event_id: None,
             content: &message.content,
             attachment: message.attachment.as_ref(),
             timestamp: message.timestamp,
@@ -90,6 +106,7 @@ fn messages<'a>(
             },
         })
         .chain(orders.into_iter().flatten().map(|message| CopyMessage {
+            event_id: None,
             content: &message.content,
             attachment: message.attachment.as_ref(),
             timestamp: message.timestamp,
@@ -98,6 +115,19 @@ fn messages<'a>(
                 UserChatSender::Peer => 1,
             },
         }))
+        .chain(
+            solver_dms
+                .into_iter()
+                .flatten()
+                .rev()
+                .map(|message| CopyMessage {
+                    event_id: Some(&message.event_id),
+                    content: &message.text,
+                    attachment: None,
+                    timestamp: message.created_at,
+                    sender: 0,
+                }),
+        )
 }
 
 fn fingerprint(message: CopyMessage<'_>) -> [u8; 32] {
@@ -116,14 +146,25 @@ fn fingerprint(message: CopyMessage<'_>) -> [u8; 32] {
 }
 
 pub(crate) fn validate_selection(app: &mut AppState) {
-    let valid = app.chat_copy_session.as_ref().is_none_or(|session| {
+    let Some(mut session) = app.chat_copy_session.take() else {
+        return;
+    };
+    let index = if let Some(event_id) = &session.event_id {
+        messages(app, &session.target)
+            .position(|message| message.event_id == Some(event_id.as_str()))
+    } else {
+        Some(session.selected_index)
+    };
+    let valid_index = index.filter(|index| {
         focused_target(app).as_ref() == Some(&session.target)
             && messages(app, &session.target)
-                .nth(session.selected_index)
+                .nth(*index)
                 .is_some_and(|message| fingerprint(message) == session.fingerprint)
     });
-    if !valid {
-        app.chat_copy_session = None;
+    if let Some(index) = valid_index {
+        session.selected_index = index;
+        app.chat_copy_session = Some(session);
+    } else {
         app.chat_copy_cancelled = true;
     }
 }
@@ -214,6 +255,7 @@ pub(crate) fn handle_key_with(
                         .min(count.saturating_sub(1))
                 };
                 if let Some(message) = messages(app, &session.target).nth(session.selected_index) {
+                    session.event_id = message.event_id.map(str::to_owned);
                     session.fingerprint = fingerprint(message);
                 }
             }
@@ -227,12 +269,15 @@ pub(crate) fn handle_key_with(
         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
     {
         if let Some(target) = focused_target(app) {
-            let first = messages(app, &target).next().map(fingerprint);
-            if let Some(fingerprint) = first {
+            let first = messages(app, &target)
+                .next()
+                .map(|message| (message.event_id.map(str::to_owned), fingerprint(message)));
+            if let Some((event_id, fingerprint)) = first {
                 app.chat_copy_session = Some(ChatCopySession {
                     target,
                     selected_index: 0,
                     fingerprint,
+                    event_id,
                 });
             } else {
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
@@ -253,7 +298,116 @@ pub(crate) mod tests {
     use crate::ui::helpers::OrderChatListItem;
     use crate::ui::key_handler::chat_helpers::sync_order_chat_draft_to_live_target;
     use crate::ui::{ChatAttachmentType, DisputeChatMessage, UserMode, UserOrderChatMessage};
+    use crate::util::solver_dms::SolverDm;
     use mostro_core::prelude::Status;
+
+    pub(crate) fn app_with_solver_dms() -> AppState {
+        let mut app = app_with_messages();
+        app.admin_show_solver_dms = true;
+        app.solver_dms.insert(
+            "dispute".into(),
+            ["older", "newest"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, id)| SolverDm {
+                    event_id: id.into(),
+                    sender_pubkey: "sender".into(),
+                    recipient_pubkey: "recipient".into(),
+                    dispute_id: Some("dispute".into()),
+                    subject: "same subject".into(),
+                    text: format!(
+                        "Dispute dispute - same subject\n  {id}\n\ttext \u{00e9}\u{754c}  "
+                    ),
+                    created_at: index as i64,
+                })
+                .collect(),
+        );
+        app
+    }
+
+    #[test]
+    fn solver_dm_copy_preserves_selected_event_on_arrival_and_copies_full_text() {
+        let mut app = app_with_solver_dms();
+        let expected = app.solver_dms["dispute"][1].text.clone();
+        enter_selection(&mut app);
+        assert_eq!(selected_index(&app), Some(0));
+        let mut incoming = app.solver_dms["dispute"][1].clone();
+        incoming.event_id = "incoming".into();
+        incoming.text = "new incoming message".into();
+        app.solver_dms.get_mut("dispute").unwrap().push(incoming);
+        validate_selection(&mut app);
+        assert_eq!(selected_index(&app), Some(1));
+        assert!(handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            |text| {
+                assert_eq!(text, expected);
+                true
+            }
+        ));
+        assert_eq!(feedback_text(&app), Some("Copied to clipboard"));
+        assert_eq!(app.admin_chat_input, "draft\n  untouched");
+    }
+
+    #[test]
+    fn solver_dm_copy_navigation_clamps_and_cancels_without_editing() {
+        let mut app = app_with_solver_dms();
+        enter_selection(&mut app);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(selected_index(&app), Some(0));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_index(&app), Some(1));
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Char('x'),
+            KeyCode::End,
+            KeyCode::PageDown,
+            KeyCode::Esc,
+        ] {
+            press(&mut app, code);
+        }
+        assert!(app.chat_copy_session.is_none());
+        assert!(app.admin_show_solver_dms);
+        assert_eq!(app.admin_chat_input, "draft\n  untouched");
+    }
+
+    #[test]
+    fn solver_dm_copy_cancels_on_removal_replacement_or_context_change() {
+        for change in 0..4 {
+            let mut app = app_with_solver_dms();
+            enter_selection(&mut app);
+            match change {
+                0 => {
+                    app.solver_dms.get_mut("dispute").unwrap().pop();
+                }
+                1 => app.solver_dms.get_mut("dispute").unwrap()[1].text = "replacement".into(),
+                2 => app.admin_show_solver_dms = false,
+                _ => app.selected_dispute_id = None,
+            }
+            validate_selection(&mut app);
+            press(&mut app, KeyCode::Enter);
+            assert!(app.chat_copy_session.is_none());
+            assert_eq!(app.admin_chat_input, "draft\n  untouched");
+        }
+    }
+
+    #[test]
+    fn solver_dm_copy_empty_chat_and_popup_do_not_change_input() {
+        let mut app = app_with_solver_dms();
+        app.solver_dms.clear();
+        enter_selection(&mut app);
+        assert!(app.chat_copy_session.is_none());
+        assert_eq!(feedback_text(&app), Some("No messages to copy"));
+        assert_eq!(app.admin_chat_input, "draft\n  untouched");
+        app.mode = UiMode::HelpPopup(app.active_tab, Box::new(app.mode.clone()));
+        assert!(!handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| false
+        ));
+        assert!(app.chat_copy_session.is_none());
+    }
 
     pub(crate) fn app_with_order_messages(channel: UserChatChannel) -> AppState {
         let mut app = AppState::new(UserRole::User);

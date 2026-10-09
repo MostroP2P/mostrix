@@ -658,7 +658,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             if serbero_active {
                 let dispute_id = selected_dispute.dispute_id.clone();
-                if main_chunks[2].height < MIN_SERBERO_PANE_HEIGHT {
+                if copy_context || main_chunks[2].height < MIN_SERBERO_PANE_HEIGHT {
                     // Short terminal: the messages matter more than the
                     // read-only notice, so the pane takes the input's rows too.
                     let pane = main_chunks[2].union(main_chunks[3]);
@@ -977,10 +977,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             (line1, Some(line2))
         };
 
-        if !is_finalized
-            && !app.admin_show_solver_dms
-            && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
-        {
+        if !is_finalized && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
             footer_line1 = format!("{CHAT_COPY_START} | {footer_line1}");
         }
 
@@ -1498,6 +1495,7 @@ mod solver_dms_pane_tests {
     use crate::models::AdminDispute;
     use crate::ui::UserRole;
     use crate::util::solver_dms::SolverDm;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -1544,6 +1542,47 @@ mod solver_dms_pane_tests {
             .draw(|f| render_disputes_in_progress(f, f.area(), app))
             .expect("draw");
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn solver_dm_copy_controls_and_feedback_fit_the_full_view() {
+        for (width, height) in [(120, 28), (80, 12), (40, 12), (30, 8)] {
+            for success in [true, false] {
+                let mut app = chat_copy::tests::app_with_solver_dms();
+                assert!(chat_copy::handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                    |_| false
+                ));
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| render_disputes_in_progress(frame, frame.area(), &mut app))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                assert!(buffer_contains(buffer, "Copy: Serbero"));
+                assert!(buffer_contains(buffer, "newest"));
+                assert!(buffer_contains(buffer, "Enter"));
+                assert!(buffer_contains(buffer, "Esc"));
+                assert!(chat_copy::handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                    |_| success
+                ));
+                terminal
+                    .draw(|frame| render_disputes_in_progress(frame, frame.area(), &mut app))
+                    .unwrap();
+                assert!(buffer_contains(
+                    terminal.backend().buffer(),
+                    if success {
+                        "Copied to clipboard"
+                    } else {
+                        "Clipboard unavailable"
+                    }
+                ));
+                assert!(app.chat_copy_session.is_none());
+                assert_eq!(app.admin_chat_input, "draft\n  untouched");
+            }
+        }
     }
 
     #[test]

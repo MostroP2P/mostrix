@@ -3613,41 +3613,53 @@ mod key_handler_tests {
     #[tokio::test]
     async fn chat_copy_dispatch_suspends_input_actions_and_paste_until_cancel() {
         for input_enabled in [false, true] {
-            let mut app = chat_copy::tests::app_with_messages();
-            app.admin_chat_input_enabled = input_enabled;
-            dispatch_observer_test_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            )
-            .await;
-            assert_eq!(chat_copy::selected_index(&app), Some(0));
-            for key in [
-                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
-                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
-                KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
-                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            for mut app in [
+                chat_copy::tests::app_with_messages(),
+                chat_copy::tests::app_with_solver_dms(),
             ] {
-                dispatch_observer_test_key(&mut app, key).await;
+                let serbero = app.admin_show_solver_dms;
+                app.admin_chat_input_enabled = input_enabled;
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                )
+                .await;
+                assert_eq!(chat_copy::selected_index(&app), Some(0));
+                for key in [
+                    KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+                    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                ] {
+                    dispatch_observer_test_key(&mut app, key).await;
+                }
+                assert!(!append_paste_to_admin_dispute_chat(&mut app, "paste"));
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                )
+                .await;
+                assert_eq!(chat_copy::selected_index(&app), Some(1));
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                )
+                .await;
+                assert!(app.chat_copy_session.is_none());
+                assert_eq!(app.admin_chat_input, "draft\n  untouched");
+                assert_eq!(app.admin_chat_input_enabled, input_enabled);
+                assert_eq!(app.admin_show_solver_dms, serbero);
+                assert!(matches!(
+                    app.mode,
+                    UiMode::AdminMode(AdminMode::ManagingDispute)
+                ));
+                assert_eq!(
+                    append_paste_to_admin_dispute_chat(&mut app, "paste"),
+                    input_enabled && !serbero
+                );
             }
-            assert!(!append_paste_to_admin_dispute_chat(&mut app, "paste"));
-            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
-                .await;
-            assert_eq!(chat_copy::selected_index(&app), Some(1));
-            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
-                .await;
-            assert!(app.chat_copy_session.is_none());
-            assert_eq!(app.admin_chat_input, "draft\n  untouched");
-            assert_eq!(app.admin_chat_input_enabled, input_enabled);
-            assert!(matches!(
-                app.mode,
-                UiMode::AdminMode(AdminMode::ManagingDispute)
-            ));
-            assert_eq!(
-                append_paste_to_admin_dispute_chat(&mut app, "paste"),
-                input_enabled
-            );
         }
     }
 

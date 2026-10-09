@@ -144,6 +144,14 @@ pub struct ChatScrollViewContent {
 
 impl ChatScrollViewContent {
     pub(crate) fn select_message(&mut self, selected: Option<usize>) -> Option<Range<usize>> {
+        self.select_message_with_wrap(selected, Wrap { trim: true })
+    }
+
+    pub(crate) fn select_message_with_wrap(
+        &mut self,
+        selected: Option<usize>,
+        wrap: Wrap,
+    ) -> Option<Range<usize>> {
         let logical_starts = self.line_start_per_message.clone();
         let mut rows = 0usize;
         let mut selected_rows = None;
@@ -163,7 +171,7 @@ impl ChatScrollViewContent {
                 }
                 rows = rows.saturating_add(
                     Paragraph::new(line.clone())
-                        .wrap(Wrap { trim: true })
+                        .wrap(wrap)
                         .line_count(self.content_width.max(1)),
                 );
             }
@@ -185,11 +193,23 @@ impl ChatScrollViewContent {
         viewport_height: u16,
         state: &mut ScrollViewState,
     ) {
+        state.set_offset(Position::new(
+            0,
+            self.selection_scroll_offset(selected, viewport_height, state.offset().y),
+        ));
+    }
+
+    pub(crate) fn selection_scroll_offset(
+        &self,
+        selected: Range<usize>,
+        viewport_height: u16,
+        current_offset: u16,
+    ) -> u16 {
         if viewport_height == 0 {
-            return;
+            return current_offset;
         }
         let height = usize::from(viewport_height);
-        let current = usize::from(state.offset().y);
+        let current = usize::from(current_offset);
         let offset = if selected.start < current || selected.len() > height {
             selected.start
         } else if selected.end > current.saturating_add(height) {
@@ -198,7 +218,7 @@ impl ChatScrollViewContent {
             current
         };
         let max_offset = self.content_height.saturating_sub(viewport_height);
-        state.set_offset(Position::new(0, offset.min(usize::from(max_offset)) as u16));
+        offset.min(usize::from(max_offset)) as u16
     }
 }
 
