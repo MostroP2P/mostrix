@@ -43,6 +43,9 @@ pub struct Settings {
     /// Toggled from Settings → Background Alerts.
     #[serde(default = "default_notifications_enabled")]
     pub notifications_enabled: bool,
+    /// Opt-in OSC 52 fallback for chat copying when the native clipboard fails.
+    #[serde(default)]
+    pub clipboard_osc52: bool,
     /// Assistants (e.g. Serbero), as npub or hex, whose `send-dm` messages to the
     /// admin key are shown per dispute. Empty disables them: anyone can send a
     /// kind 14 to a solver, so only listed authors are read.
@@ -91,6 +94,7 @@ impl Default for Settings {
             blossom_servers: Vec::new(),
             push_server_url: default_push_server_url(),
             notifications_enabled: default_notifications_enabled(),
+            clipboard_osc52: false,
             trusted_dm_senders: Vec::new(),
         }
     }
@@ -450,6 +454,41 @@ pub fn save_settings(settings: &Settings) -> Result<(), anyhow::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn osc52_defaults_off_in_defaults_template_and_legacy_config() {
+        assert!(!Settings::default().clipboard_osc52);
+        let template: Settings = toml::from_str(DEFAULT_SETTINGS_TOML).unwrap();
+        assert!(!template.clipboard_osc52);
+        let mut legacy: toml::Value = toml::from_str(DEFAULT_SETTINGS_TOML).unwrap();
+        legacy.as_table_mut().unwrap().remove("clipboard_osc52");
+        let legacy = toml::to_string(&legacy).unwrap();
+        assert!(!toml::from_str::<Settings>(&legacy).unwrap().clipboard_osc52);
+        let config = config::Config::builder()
+            .add_source(config::File::from_str(&legacy, config::FileFormat::Toml))
+            .build()
+            .unwrap();
+        assert!(
+            !config
+                .try_deserialize::<Settings>()
+                .unwrap()
+                .clipboard_osc52
+        );
+    }
+
+    #[test]
+    fn osc52_opt_in_round_trips_through_save_format() {
+        let settings = Settings {
+            clipboard_osc52: true,
+            ..Settings::default()
+        };
+        let serialized = toml::to_string_pretty(&settings).unwrap();
+        assert!(
+            toml::from_str::<Settings>(&serialized)
+                .unwrap()
+                .clipboard_osc52
+        );
+    }
 
     /// Legacy installs omit `ln_address`; serde `default` must yield empty string (same as explicit "").
     #[test]

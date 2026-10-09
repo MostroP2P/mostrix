@@ -760,6 +760,7 @@ ln_address = "user@domain.com"
             blossom_servers: vec![],
             push_server_url: String::new(),
             notifications_enabled: true,
+            clipboard_osc52: false,
             trusted_dm_senders: vec![],
         };
 

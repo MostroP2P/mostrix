@@ -274,6 +274,39 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
 - **Exit Confirmation**: Pressing `Q` or selecting the Exit tab shows a confirmation popup before exiting the application. Use Left/Right to select Yes/No, Enter to confirm, or Esc to cancel.
 - **Help popup**: Press **Ctrl+H** (in normal or managing-dispute mode) to open a centered overlay with all keyboard shortcuts for the current tab. Press Esc, Enter, or Ctrl+H to close.
 
+### Optional Terminal Clipboard Fallback (OSC 52)
+
+Chat selection with **Ctrl+C**, arrow keys, and **Enter** uses the native clipboard
+first. To allow a terminal clipboard fallback when native copying fails, set this
+in your active `settings.toml` and restart Mostrix:
+
+```toml
+clipboard_osc52 = true
+```
+
+The default is `false`, including for older configurations without this field.
+This option applies only to chat-message copying (Disputes in Progress, Solver
+DMs, My Trades, and Observer), not invoice, seed, or Shared key popup shortcuts.
+
+- Native success reports **Copied to clipboard** and never sends OSC 52.
+- Fallback success reports **Sent to terminal clipboard**. The terminal can ignore
+  or block the request; Mostrix cannot confirm that its clipboard changed.
+- Non-interactive output, `TERM=dumb`, an oversized payload, or a write/flush failure reports
+  **Clipboard unavailable**. Copy mode exits even on failure.
+- Fallback requires interactive stdin/stdout and rejects `TERM=dumb`. It sends
+  only a clipboard-write sequence, never a clipboard read or query.
+- The limit is **64 KiB of original UTF-8 bytes** before base64 encoding; larger
+  fallback payloads are rejected without truncation. Native copying has no such cap.
+- Over SSH, enable this on the machine running Mostrix and use a local terminal
+  that permits OSC 52 clipboard writes. A working native clipboard still takes
+  priority. tmux/screen may need their own configuration; Mostrix does not add
+  automatic passthrough sequences.
+
+Copied messages and attachment filenames leave Mostrix for the system or terminal
+clipboard and may be retained by clipboard history/managers. Observer **Ctrl+L**
+clears application state, not an external clipboard. Automated tests verify the
+output bytes and failure paths; they do not certify a specific terminal/SSH setup.
+
 ## UI Components
 
 ### 1. Orders Tab

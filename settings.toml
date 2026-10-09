@@ -44,6 +44,11 @@ push_server_url = "https://mostro-push-server.fly.dev"
 # focused. Also toggled from Settings -> Background Alerts.
 notifications_enabled = true
 
+# Chat-copy fallback after native clipboard failure. May send chat text to the
+# local terminal clipboard over SSH. Requires terminal OSC 52 support; restart
+# Mostrix after changing this setting.
+clipboard_osc52 = false
+
 # Admin mode: assistants (e.g. Serbero) whose messages to your admin key are shown
 # per dispute, as npub or hex. Only listed authors are read.
 # trusted_dm_senders = ["npub1..."]

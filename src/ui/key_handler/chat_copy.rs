@@ -1,14 +1,17 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::ui::helpers::{message_visible_for_party, selected_filtered_dispute};
 use crate::ui::key_handler::chat_helpers::live_order_chat_draft_target;
 use crate::ui::key_handler::handle_clipboard_copy;
+use crate::ui::terminal::copy_with_osc52;
 use crate::ui::{
     AdminMode, AdminTab, AppState, ChatAttachment, ChatParty, ChatSender, DisputeFilter, Tab,
     UiMode, UserChatChannel, UserChatSender, UserRole, UserTab,
 };
+use crate::SETTINGS;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChatCopyTarget {
@@ -213,14 +216,65 @@ pub(crate) fn feedback_text(app: &AppState) -> Option<&'static str> {
     (focused_target(app).as_ref() == Some(&feedback.target)).then_some(feedback.text)
 }
 
-pub(crate) fn handle_key(app: &mut AppState, key: &KeyEvent) -> bool {
-    handle_key_with(app, key, handle_clipboard_copy)
+#[derive(Debug, PartialEq, Eq)]
+enum CopyOutcome {
+    Copied,
+    SentToTerminal,
+    Unavailable,
 }
 
+fn copy_chat_text_with(
+    text: String,
+    osc52_enabled: bool,
+    native: impl FnOnce(String) -> bool,
+    terminal: impl FnOnce(&str) -> bool,
+) -> CopyOutcome {
+    let fallback = osc52_enabled.then(|| Zeroizing::new(text.clone()));
+    if native(text) {
+        return CopyOutcome::Copied;
+    }
+    if fallback
+        .as_ref()
+        .is_some_and(|text| terminal(text.as_str()))
+    {
+        CopyOutcome::SentToTerminal
+    } else {
+        CopyOutcome::Unavailable
+    }
+}
+
+pub(crate) fn handle_key(app: &mut AppState, key: &KeyEvent) -> bool {
+    handle_key_with_result(app, key, |text| {
+        copy_chat_text_with(
+            text,
+            SETTINGS
+                .get()
+                .is_some_and(|settings| settings.clipboard_osc52),
+            handle_clipboard_copy,
+            copy_with_osc52,
+        )
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn handle_key_with(
     app: &mut AppState,
     key: &KeyEvent,
     copy: impl FnOnce(String) -> bool,
+) -> bool {
+    handle_key_with_result(app, key, |text| {
+        if copy(text) {
+            CopyOutcome::Copied
+        } else {
+            CopyOutcome::Unavailable
+        }
+    })
+}
+
+fn handle_key_with_result(
+    app: &mut AppState,
+    key: &KeyEvent,
+    copy: impl FnOnce(String) -> CopyOutcome,
 ) -> bool {
     app.chat_copy_feedback = None;
     if app.user_role == UserRole::Admin
@@ -252,13 +306,11 @@ pub(crate) fn handle_key_with(
                         None => Some(message.content.to_owned()),
                     });
                 let feedback = match text {
-                    Some(text) => {
-                        if copy(text) {
-                            "Copied to clipboard"
-                        } else {
-                            "Clipboard unavailable"
-                        }
-                    }
+                    Some(text) => match copy(text) {
+                        CopyOutcome::Copied => "Copied to clipboard",
+                        CopyOutcome::SentToTerminal => "Sent to terminal clipboard",
+                        CopyOutcome::Unavailable => "Clipboard unavailable",
+                    },
                     None => "No filename to copy",
                 };
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
@@ -323,6 +375,85 @@ pub(crate) mod tests {
     use crate::ui::{ChatAttachmentType, DisputeChatMessage, UserMode, UserOrderChatMessage};
     use crate::util::solver_dms::SolverDm;
     use mostro_core::prelude::Status;
+
+    #[test]
+    fn osc52_fallback_requires_opt_in_and_native_failure() {
+        for enabled in [false, true] {
+            for native_success in [false, true] {
+                for terminal_success in [false, true] {
+                    let payload = "  private\n\u{00e9}\x1b\t  ";
+                    let mut native_called = false;
+                    let mut terminal_called = false;
+                    let outcome = copy_chat_text_with(
+                        payload.into(),
+                        enabled,
+                        |text| {
+                            native_called = true;
+                            assert_eq!(text, payload);
+                            native_success
+                        },
+                        |text| {
+                            terminal_called = true;
+                            assert_eq!(text, payload);
+                            terminal_success
+                        },
+                    );
+                    assert!(native_called);
+                    assert_eq!(terminal_called, enabled && !native_success);
+                    assert_eq!(
+                        outcome,
+                        if native_success {
+                            CopyOutcome::Copied
+                        } else if enabled && terminal_success {
+                            CopyOutcome::SentToTerminal
+                        } else {
+                            CopyOutcome::Unavailable
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn osc52_cap_does_not_limit_native_clipboard() {
+        let text = "x".repeat(65 * 1024);
+        let outcome = copy_chat_text_with(
+            text.clone(),
+            true,
+            |payload| {
+                assert_eq!(payload, text);
+                true
+            },
+            |_| panic!("native success must bypass OSC 52"),
+        );
+        assert_eq!(outcome, CopyOutcome::Copied);
+    }
+
+    #[test]
+    fn osc52_feedback_distinguishes_sent_from_copied_in_every_chat_view() {
+        for mut app in [
+            app_with_messages(),
+            app_with_solver_dms(),
+            app_with_order_messages(UserChatChannel::Peer),
+            app_with_observer_messages(),
+        ] {
+            enter_selection(&mut app);
+            assert!(handle_key_with_result(
+                &mut app,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                |text| { copy_chat_text_with(text, true, |_| false, |_| true) }
+            ));
+            assert!(app.chat_copy_session.is_none());
+            assert_eq!(feedback_text(&app), Some("Sent to terminal clipboard"));
+            assert!(!handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+                |_| false
+            ));
+            assert!(feedback_text(&app).is_none());
+        }
+    }
 
     pub(crate) fn app_with_observer_messages() -> AppState {
         let mut app = app_with_messages();
