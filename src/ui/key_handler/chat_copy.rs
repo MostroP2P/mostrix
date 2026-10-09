@@ -376,6 +376,251 @@ pub(crate) mod tests {
     use crate::util::solver_dms::SolverDm;
     use mostro_core::prelude::Status;
 
+    pub(crate) fn copy_views() -> [AppState; 6] {
+        let mut seller = app_with_messages();
+        seller.active_chat_party = ChatParty::Seller;
+        [
+            app_with_messages(),
+            seller,
+            app_with_solver_dms(),
+            app_with_order_messages(UserChatChannel::Peer),
+            app_with_order_messages(UserChatChannel::Solver),
+            app_with_observer_messages(),
+        ]
+    }
+
+    #[test]
+    fn chat_copy_matrix_preserves_inputs_and_normal_selection_on_every_exit() {
+        for enabled in [false, true] {
+            for outcome in [None, Some(false), Some(true)] {
+                for mut app in copy_views() {
+                    app.admin_chat_input_enabled = enabled;
+                    app.order_chat_input_enabled = enabled;
+                    app.admin_chat_selected_message_idx = Some(7);
+                    app.order_chat_selected_message_idx = Some(7);
+                    let inputs = (
+                        app.admin_chat_input.clone(),
+                        app.order_chat_input.clone(),
+                        app.observer_shared_key_input.clone(),
+                        app.order_chat_draft_owner,
+                    );
+                    let mode = std::mem::discriminant(&app.mode);
+                    let target = focused_target(&app).unwrap();
+                    let expected = messages(&app, &target).next().unwrap().content.to_owned();
+                    enter_selection(&mut app);
+                    press(&mut app, KeyCode::Up);
+                    enter_selection(&mut app);
+                    assert_eq!(selected_index(&app), Some(0));
+                    let exit = if outcome.is_some() {
+                        KeyCode::Enter
+                    } else {
+                        KeyCode::Esc
+                    };
+                    let mut copied = false;
+                    assert!(handle_key_with(
+                        &mut app,
+                        &KeyEvent::new(exit, KeyModifiers::NONE),
+                        |text| {
+                            copied = true;
+                            assert_eq!(text, expected);
+                            outcome.unwrap_or(false)
+                        }
+                    ));
+                    assert_eq!(copied, outcome.is_some());
+                    assert!(app.chat_copy_session.is_none());
+                    assert_eq!(std::mem::discriminant(&app.mode), mode);
+                    assert_eq!(focused_target(&app), Some(target));
+                    assert_eq!(
+                        (
+                            app.admin_chat_input,
+                            app.order_chat_input,
+                            app.observer_shared_key_input,
+                            app.order_chat_draft_owner
+                        ),
+                        inputs
+                    );
+                    assert_eq!(app.admin_chat_input_enabled, enabled);
+                    assert_eq!(app.order_chat_input_enabled, enabled);
+                    assert_eq!(app.admin_chat_selected_message_idx, Some(7));
+                    assert_eq!(app.order_chat_selected_message_idx, Some(7));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chat_copy_matrix_popup_invalidation_consumes_one_key_without_copying() {
+        for mut app in copy_views() {
+            enter_selection(&mut app);
+            app.mode = UiMode::HelpPopup(app.active_tab, Box::new(app.mode.clone()));
+            validate_selection(&mut app);
+            assert!(app.chat_copy_session.is_none());
+            press(&mut app, KeyCode::Enter);
+            assert!(!app.chat_copy_cancelled);
+            assert!(matches!(app.mode, UiMode::HelpPopup(..)));
+            assert!(!handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                |_| panic!("popup must own the next key")
+            ));
+            assert!(!handle_key_with(
+                &mut app,
+                &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                |_| panic!("popup must prevent entry")
+            ));
+        }
+    }
+
+    #[test]
+    fn chat_copy_matrix_long_tokens_keep_measured_selection_visible() {
+        use crate::ui::helpers::ChatScrollViewContent;
+        use crate::ui::PRIMARY_COLOR;
+        use ratatui::{
+            backend::TestBackend,
+            text::Line,
+            widgets::{Paragraph, Wrap},
+            Terminal,
+        };
+
+        for width in [12, 28, 78] {
+            for trim in [false, true] {
+                let lines = vec![
+                    Line::from(format!("lnbc{}", "q".repeat(512))),
+                    Line::from("  \u{65e5}\u{672c}\u{8a9e}  "),
+                    Line::from(""),
+                    Line::from("last"),
+                    Line::from(""),
+                ];
+                let wrap = Wrap { trim };
+                let expected_height = Paragraph::new(lines.clone()).wrap(wrap).line_count(width);
+                for selected in [0, 1] {
+                    let mut content = ChatScrollViewContent {
+                        lines: lines.clone(),
+                        content_height: 5,
+                        content_width: width,
+                        line_start_per_message: vec![0, 3],
+                    };
+                    let range = content
+                        .select_message_with_wrap(Some(selected), wrap)
+                        .unwrap();
+                    assert_eq!(usize::from(content.content_height), expected_height);
+                    let offset = content.selection_scroll_offset(range.clone(), 3, 0);
+                    if selected == 0 {
+                        assert!(range.len() > 3);
+                        assert_eq!(offset, 0);
+                        assert_eq!(content.selection_scroll_offset(range, 3, u16::MAX), 0);
+                    } else {
+                        assert!(offset > 0);
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            frame.render_widget(
+                                Paragraph::new(content.lines.clone())
+                                    .wrap(wrap)
+                                    .scroll((offset, 0)),
+                                frame.area(),
+                            )
+                        })
+                        .unwrap();
+                    let highlighted: String = terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .filter(|cell| cell.bg == PRIMARY_COLOR && cell.symbol() != " ")
+                        .map(|cell| cell.symbol())
+                        .collect();
+                    if selected == 0 {
+                        assert!(highlighted.starts_with("lnbc"));
+                    } else {
+                        assert_eq!(highlighted, "last");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chat_copy_matrix_feedback_fits_small_views_and_stays_scoped() {
+        use crate::ui::tabs::{disputes_in_progress_tab, observer_tab, order_in_progress_tab};
+        use ratatui::{backend::TestBackend, Terminal};
+
+        for outcome in [
+            CopyOutcome::Copied,
+            CopyOutcome::SentToTerminal,
+            CopyOutcome::Unavailable,
+        ] {
+            let expected = match outcome {
+                CopyOutcome::Copied => "Copied to clipboard",
+                CopyOutcome::SentToTerminal => "Sent to terminal clipboard",
+                CopyOutcome::Unavailable => "Clipboard unavailable",
+            };
+            for mut app in copy_views() {
+                enter_selection(&mut app);
+                handle_key_with_result(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                    |_| match outcome {
+                        CopyOutcome::Copied => CopyOutcome::Copied,
+                        CopyOutcome::SentToTerminal => CopyOutcome::SentToTerminal,
+                        CopyOutcome::Unavailable => CopyOutcome::Unavailable,
+                    },
+                );
+                for (width, height) in [(30, 8), (40, 12), (80, 24)] {
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal
+                        .draw(|frame| match app.active_tab {
+                            Tab::Admin(AdminTab::DisputesInProgress) => {
+                                disputes_in_progress_tab::render_disputes_in_progress(
+                                    frame,
+                                    frame.area(),
+                                    &mut app,
+                                )
+                            }
+                            Tab::Admin(AdminTab::Observer) => {
+                                observer_tab::render_observer_tab(frame, frame.area(), &mut app)
+                            }
+                            Tab::User(UserTab::MyTrades) => {
+                                order_in_progress_tab::render_order_in_progress(
+                                    frame,
+                                    frame.area(),
+                                    &mut app,
+                                )
+                            }
+                            _ => unreachable!(),
+                        })
+                        .unwrap();
+                    let rendered: String = terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect();
+                    for word in expected.split_whitespace() {
+                        assert!(
+                            rendered.contains(word),
+                            "{width}x{height}: missing {word} for {:?}",
+                            app.active_tab
+                        );
+                    }
+                    assert_eq!(feedback_text(&app), Some(expected));
+                }
+                let original_tab = app.active_tab;
+                app.active_tab = Tab::User(UserTab::Settings);
+                assert_eq!(feedback_text(&app), None);
+                app.active_tab = original_tab;
+                assert!(!handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+                    |_| panic!("feedback must not copy")
+                ));
+                assert_eq!(feedback_text(&app), None);
+            }
+        }
+    }
+
     #[test]
     fn osc52_fallback_requires_opt_in_and_native_failure() {
         for enabled in [false, true] {

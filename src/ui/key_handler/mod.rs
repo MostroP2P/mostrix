@@ -3683,6 +3683,67 @@ mod key_handler_tests {
     }
 
     #[tokio::test]
+    async fn chat_copy_matrix_dispatch_blocks_actions_and_invalidated_enter() {
+        for enabled in [false, true] {
+            for mut app in chat_copy::tests::copy_views() {
+                app.admin_chat_input_enabled = enabled;
+                app.order_chat_input_enabled = enabled;
+                let inputs = (
+                    app.admin_chat_input.clone(),
+                    app.order_chat_input.clone(),
+                    app.observer_shared_key_input.clone(),
+                    app.order_chat_draft_owner,
+                );
+                let mode = std::mem::discriminant(&app.mode);
+                let tab = app.active_tab;
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                )
+                .await;
+                for key in [
+                    KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+                    KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+                    KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT),
+                    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                ] {
+                    dispatch_observer_test_key(&mut app, key).await;
+                }
+                assert_eq!(chat_copy::selected_index(&app), Some(0));
+                assert_eq!(std::mem::discriminant(&app.mode), mode);
+                assert_eq!(app.active_tab, tab);
+                assert_eq!(app.admin_chat_input_enabled, enabled);
+                assert_eq!(app.order_chat_input_enabled, enabled);
+                app.mode = UiMode::HelpPopup(tab, Box::new(app.mode.clone()));
+                chat_copy::validate_selection(&mut app);
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert!(!app.chat_copy_cancelled);
+                assert!(matches!(app.mode, UiMode::HelpPopup(..)));
+                assert_eq!(
+                    (
+                        app.admin_chat_input,
+                        app.order_chat_input,
+                        app.observer_shared_key_input,
+                        app.order_chat_draft_owner
+                    ),
+                    inputs
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn chat_copy_dispatch_suspends_input_actions_and_paste_until_cancel() {
         for input_enabled in [false, true] {
             for mut app in [

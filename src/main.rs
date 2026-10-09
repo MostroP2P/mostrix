@@ -1259,6 +1259,58 @@ mod own_reputation_refresh_tests {
 #[cfg(test)]
 mod paste_routing_tests {
     #[test]
+    fn chat_copy_matrix_blocks_paste_during_selection_and_pending_cancellation() {
+        use crate::ui::key_handler::chat_copy;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        for enabled in [false, true] {
+            for mut app in chat_copy::tests::copy_views() {
+                app.admin_chat_input_enabled = enabled;
+                app.order_chat_input_enabled = enabled;
+                let inputs = (
+                    app.admin_chat_input.clone(),
+                    app.order_chat_input.clone(),
+                    app.observer_shared_key_input.clone(),
+                    app.order_chat_draft_owner,
+                );
+                chat_copy::handle_key_with(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                    |_| panic!("selection must not copy"),
+                );
+                super::apply_pasted_text_to_active_input(&mut app, "ignored\n");
+                assert_eq!(
+                    (
+                        &app.admin_chat_input,
+                        &app.order_chat_input,
+                        &app.observer_shared_key_input,
+                        app.order_chat_draft_owner
+                    ),
+                    (&inputs.0, &inputs.1, &inputs.2, inputs.3)
+                );
+                app.admin_dispute_chats.clear();
+                app.order_chats.clear();
+                app.user_dispute_chats.clear();
+                app.solver_dms.clear();
+                app.observer_messages.clear();
+                chat_copy::validate_selection(&mut app);
+                assert!(app.chat_copy_session.is_none());
+                assert!(app.chat_copy_cancelled);
+                super::apply_pasted_text_to_active_input(&mut app, "still ignored\n");
+                assert_eq!(
+                    (
+                        app.admin_chat_input,
+                        app.order_chat_input,
+                        app.observer_shared_key_input,
+                        app.order_chat_draft_owner
+                    ),
+                    inputs
+                );
+            }
+        }
+    }
+
+    #[test]
     fn observer_copy_blocks_paste_and_restores_shared_key_input() {
         use crate::ui::key_handler::chat_copy;
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
