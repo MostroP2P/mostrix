@@ -1,8 +1,9 @@
 //! Observer (read-only Shared-key chat).
 //!
-//! Shortcut hints use a one-row keycap command bar; paste/scroll (and save-file
-//! when attachments exist) sit on the chat border. The Ctrl+H help overlay is
-//! styled in [`crate::ui::help_popup`].
+//! Shortcut hints use a one-row keycap command bar (`Ctrl+L` Clear, `Ctrl+K`
+//! Actions) with paste/scroll on the chat border. Esc dismisses the inline
+//! error (not a full clear). The Ctrl+H help overlay is styled in
+//! [`crate::ui::help_popup`].
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
@@ -47,19 +48,21 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Primary Observer keycap row (`Load` / `Help` / `Copy` / `Clear` / `All`).
+/// Primary Observer keycap row aligned with My Trades / Disputes.
 ///
-/// Help and Copy are ordered before Clear-all so narrow terminals keep the same
-/// primary discoverability as My Trades / Disputes.
+/// `Ctrl+L` is Clear (full wipe). Esc dismisses only the inline error and is
+/// not labeled Clear here — use Actions → Dismiss error, or Esc with no label
+/// clutter on the primary row.
 fn observer_command_bar(width: u16) -> Line<'static> {
+    // Clear before Actions so narrow terminals keep the Ctrl+L wipe discoverable.
     shortcut_bar(
         width,
         &[
             ("Enter", "Load"),
+            ("Ctrl+L", "Clear"),
             ("Ctrl+H", "Help"),
+            ("Ctrl+K", "Actions"),
             ("Ctrl+C", "Copy"),
-            ("Esc", "Clear"),
-            ("Ctrl+L", "All"),
         ],
     )
 }
@@ -210,6 +213,9 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     let chat_area = chunks[1];
     let has_attachment = app.observer_messages.iter().any(|m| m.attachment.is_some());
     let mut chat_hints = Vec::new();
+    if app.observer_error.is_some() {
+        chat_hints.push(("Esc", "Dismiss"));
+    }
     if has_attachment {
         chat_hints.push(("Ctrl+S", "Save file"));
     }
@@ -581,26 +587,38 @@ mod tests {
     fn observer_command_bar_shows_primary_actions_on_one_row() {
         for (width, height) in [(120, 24), (80, 24), (80, 12), (40, 24), (40, 12)] {
             let buf = render_observer(&mut AppState::new(UserRole::Admin), width, height);
-            for label in ["Load", "Help"] {
+            assert!(
+                buffer_contains(&buf, "Load"),
+                "missing Load at {width}x{height}"
+            );
+            // Enter Load ≈ 12; + Ctrl+L Clear ≈ 28; Help ≈ 43; Actions ≈ 61; Copy ≈ 75.
+            if width >= 30 {
                 assert!(
-                    buffer_contains(&buf, label),
-                    "missing {label} at {width}x{height}"
+                    buffer_contains(&buf, "Clear"),
+                    "Clear must be Ctrl+L, missing at {width}x{height}"
                 );
             }
-            // Load+Help ≈ 27 cols; Copy needs ≈ 42; Clear/All need ≈ 60+.
-            if width >= 50 {
+            if width >= 45 {
+                assert!(
+                    buffer_contains(&buf, "Help"),
+                    "missing Help at {width}x{height}"
+                );
+                assert!(
+                    !buffer_contains(&buf, "Dismiss"),
+                    "Esc Dismiss is error-only; must not appear without an error"
+                );
+            }
+            if width >= 65 {
+                assert!(
+                    buffer_contains(&buf, "Actions"),
+                    "missing Actions at {width}x{height}"
+                );
+            }
+            if width >= 80 {
                 assert!(
                     buffer_contains(&buf, "Copy"),
                     "missing Copy at {width}x{height}"
                 );
-            }
-            if width >= 70 {
-                for label in ["Clear", "All"] {
-                    assert!(
-                        buffer_contains(&buf, label),
-                        "missing {label} at {width}x{height}"
-                    );
-                }
             }
             assert!(
                 !buffer_contains(&buf, "Ctrl+L: Clear all") && !buffer_contains(&buf, "Ctrl+L:All"),
@@ -611,6 +629,21 @@ mod tests {
                 "stale colon-style copy hint at {width}x{height}"
             );
         }
+    }
+
+    #[test]
+    fn observer_error_shows_esc_dismiss_on_chat_border_not_clear() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.observer_error = Some("bad key".into());
+        let buf = render_observer(&mut app, 120, 24);
+        assert!(
+            buffer_contains(&buf, "Dismiss"),
+            "Esc dismiss hint should appear when an error is shown"
+        );
+        assert!(
+            buffer_contains(&buf, "Clear"),
+            "Ctrl+L Clear must stay on the command bar"
+        );
     }
 
     #[test]
@@ -649,7 +682,7 @@ mod tests {
             "narrow layout should not attempt to render the old full-width footer"
         );
 
-        for label in ["Load", "Help"] {
+        for label in ["Load", "Clear"] {
             assert!(
                 buffer_contains(&buf, label),
                 "narrow command bar is missing label: {label}"

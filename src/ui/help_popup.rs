@@ -313,6 +313,7 @@ fn compact_observer_help(inner_width: u16, inner_height: u16) -> Vec<Line<'stati
 
     let full_lines: Vec<_> = [
         HELP_OBS_ENTER_LOAD,
+        HELP_OBS_CTRL_K_ACTIONS,
         HELP_CHAT_COPY,
         HELP_CHAT_COPY_KEYS,
         HELP_OBS_CTRL_L_CLEAR,
@@ -346,10 +347,11 @@ fn compact_observer_help(inner_width: u16, inner_height: u16) -> Vec<Line<'stati
     } else {
         &[
             "Enter: Load Shared key",
+            "Ctrl+K: Actions",
             "Ctrl+C: Copy; Copy: ↑↓ Enter Esc",
             "Ctrl+L: Clear all",
             "Ctrl+S: Save attachment",
-            "Esc: Clear error",
+            "Esc: Dismiss error",
             "↑↓ PgUp/PgDn: Scroll",
             HELP_OBS_PASTE_SHARED_KEY,
         ]
@@ -651,6 +653,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DIP_SELECT_DISPUTE.to_string(),
                 HELP_DIP_SCROLL_CHAT.to_string(),
                 HELP_DIP_END_BOTTOM.to_string(),
+                HELP_DIP_CTRL_K_ACTIONS.to_string(),
                 HELP_DIP_SHIFT_F_RESOLVE.to_string(),
                 HELP_DIP_SHIFT_R_RECOVER.to_string(),
                 HELP_CTRL_T_TAKEOVER.to_string(),
@@ -680,13 +683,14 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             HELP_TITLE_OBSERVER.to_string(),
             vec![
                 HELP_OBS_ENTER_LOAD.to_string(),
+                HELP_OBS_CTRL_K_ACTIONS.to_string(),
                 HELP_CHAT_COPY.to_string(),
                 HELP_CHAT_COPY_KEYS.to_string(),
                 HELP_OBS_PASTE_SHARED_KEY.to_string(),
                 HELP_OBS_SCROLL_LINE.to_string(),
                 HELP_OBS_SCROLL_PAGE.to_string(),
-                HELP_OBS_ESC_CLEAR_ERR.to_string(),
                 HELP_OBS_CTRL_L_CLEAR.to_string(),
+                HELP_OBS_ESC_CLEAR_ERR.to_string(),
                 HELP_OBS_CTRL_S_ATTACH.to_string(),
             ],
         ),

@@ -46,6 +46,16 @@ pub enum UiMode {
         order_id: uuid::Uuid,
         previous_mode: Box<UiMode>,
     },
+    /// Disputes in Progress Ctrl+K action list; Esc restores `previous_mode`.
+    DisputeActionsPopup {
+        selected_index: usize,
+        previous_mode: Box<UiMode>,
+    },
+    /// Observer Ctrl+K action list; Esc restores `previous_mode`.
+    ObserverActionsPopup {
+        selected_index: usize,
+        previous_mode: Box<UiMode>,
+    },
     /// Save attachment popup: list index of selected attachment (Ctrl+S in dispute chat).
     SaveAttachmentPopup(usize),
     /// Observer save attachment popup: list index of selected attachment (Ctrl+S in observer tab).
@@ -179,6 +189,20 @@ impl Clone for UiMode {
                 order_id: *order_id,
                 previous_mode: Box::new((**previous_mode).clone()),
             },
+            UiMode::DisputeActionsPopup {
+                selected_index,
+                previous_mode,
+            } => UiMode::DisputeActionsPopup {
+                selected_index: *selected_index,
+                previous_mode: Box::new((**previous_mode).clone()),
+            },
+            UiMode::ObserverActionsPopup {
+                selected_index,
+                previous_mode,
+            } => UiMode::ObserverActionsPopup {
+                selected_index: *selected_index,
+                previous_mode: Box::new((**previous_mode).clone()),
+            },
             UiMode::SaveAttachmentPopup(idx) => UiMode::SaveAttachmentPopup(*idx),
             UiMode::ObserverSaveAttachmentPopup(idx) => UiMode::ObserverSaveAttachmentPopup(*idx),
             UiMode::UserSaveAttachmentPopup(order_id, idx) => {
@@ -278,7 +302,8 @@ pub struct AppState {
     pub selected_dispute_id: Option<String>, // Selected dispute (by dispute id) in Disputes in Progress tab
     pub active_chat_party: ChatParty, // Which party the admin is currently chatting with
     pub admin_chat_input: String,     // Current message being typed by admin
-    pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
+    /// INSERT vs COMMAND for Disputes in Progress (`true` = INSERT typing; `i` / Esc).
+    pub admin_chat_input_enabled: bool,
     pub(crate) chat_copy_session: Option<ChatCopySession>,
     pub(crate) chat_copy_feedback: Option<ChatCopyFeedback>,
     pub(crate) chat_copy_cancelled: bool,
@@ -456,7 +481,7 @@ impl AppState {
             selected_dispute_id: None,
             active_chat_party: ChatParty::Buyer,
             admin_chat_input: String::new(),
-            admin_chat_input_enabled: true, // Chat input enabled by default
+            admin_chat_input_enabled: true, // INSERT by default when ManagingDispute
             chat_copy_session: None,
             chat_copy_feedback: None,
             chat_copy_cancelled: false,
@@ -589,7 +614,8 @@ impl AppState {
 
     /// True when the Observer Shared key field should accept typing and paste.
     ///
-    /// False while a modal (`HelpPopup`, `OperationResult`, save-attachment, …) owns input.
+    /// False while a modal (`HelpPopup`, `ObserverActionsPopup`, `OperationResult`,
+    /// save-attachment, …) owns input.
     pub fn observer_inputs_editable(&self) -> bool {
         matches!(self.active_tab, Tab::Admin(AdminTab::Observer))
             && matches!(
@@ -630,9 +656,9 @@ impl AppState {
         generation
     }
 
-    /// Securely wipe all observer inputs and fetched content.
-    /// Uses `zeroize` to overwrite strings before clearing them, then
-    /// resets error state to safe defaults.
+    /// Securely wipe all observer inputs and fetched content (Ctrl+L Clear /
+    /// Observer Actions → Clear all). Uses `zeroize` before clear, invalidates
+    /// in-flight fetches, and resets error/loading to safe defaults.
     pub fn clear_observer_secrets(&mut self) {
         self.bump_observer_fetch_generation();
         self.observer_shared_key_input.zeroize();

@@ -1,8 +1,8 @@
 //! Admin disputes-in-progress UI.
 //!
-//! Shortcut hints use a one-row keycap command bar (Shift+I toggles INSERT /
-//! COMMAND) with party, resolve, filter, and file hints on the chat border.
-//! The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
+//! Shortcut hints use a one-row keycap command bar (`i` / Esc for INSERT /
+//! COMMAND, Ctrl+K Actions) with party, filter, and file hints on the chat
+//! border. The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
 
 use std::str::FromStr;
 
@@ -94,11 +94,11 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Mode-aware keycap row for the dispute command bar.
+/// Mode-aware keycap row for the dispute command bar (aligned with My Trades).
 ///
 /// Finalized disputes show filter/remove/nav; managing disputes switch between
-/// INSERT (`Enter` Send) and COMMAND (`Shift+I` Write). Resolve/Recover stay on
-/// the chat border when managing (no Ctrl+K Actions menu yet).
+/// INSERT (`Enter` Send / `Esc` Commands) and COMMAND (`i` Write), with
+/// Resolve/Recover/Filter/Remove in Ctrl+K Actions.
 fn dispute_command_bar(
     width: u16,
     input_enabled: bool,
@@ -109,9 +109,8 @@ fn dispute_command_bar(
         return shortcut_bar(
             width,
             &[
+                ("Ctrl+K", "Actions"),
                 ("Ctrl+H", "Help"),
-                ("Shift+C", "Filter"),
-                ("Del", "Remove"),
                 ("↑↓", "Disputes"),
             ],
         );
@@ -121,7 +120,8 @@ fn dispute_command_bar(
             width,
             &[
                 ("Enter", "Send"),
-                ("Shift+I", "Commands"),
+                ("Esc", "Commands"),
+                ("Ctrl+K", "Actions"),
                 ("Ctrl+H", "Help"),
                 ("Ctrl+C", "Copy"),
             ],
@@ -129,15 +129,19 @@ fn dispute_command_bar(
     } else if managing {
         shortcut_bar(
             width,
-            &[("Shift+I", "Write"), ("Ctrl+H", "Help"), ("Ctrl+C", "Copy")],
+            &[
+                ("i", "Write"),
+                ("Ctrl+K", "Actions"),
+                ("Ctrl+H", "Help"),
+                ("Ctrl+C", "Copy"),
+            ],
         )
     } else {
         shortcut_bar(
             width,
             &[
+                ("Ctrl+K", "Actions"),
                 ("Ctrl+H", "Help"),
-                ("Shift+F", "Resolve"),
-                ("Shift+R", "Recover"),
                 ("↑↓", "Disputes"),
             ],
         )
@@ -864,12 +868,9 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 let has_selected_attachment = get_selected_chat_message(app, dispute_id_key)
                     .and_then(|m| m.attachment.as_ref())
                     .is_some();
-                // Resolve/Recover stay visible here (no Ctrl+K Actions menu yet).
+                // Resolve/Recover/Filter/Remove live in Ctrl+K Actions (like My Trades).
                 let mut chat_hints = vec![
                     ("Tab", "Party"),
-                    ("Shift+F", "Resolve"),
-                    ("Shift+R", "Recover"),
-                    ("Del", "Remove"),
                     ("Shift+C", filter_hint_label(app.dispute_filter)),
                 ];
                 if has_selected_attachment {
@@ -933,13 +934,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     "Message (copying)"
                 } else if is_input_focused && is_input_enabled {
                     if input_width < 36 {
-                        "INSERT · Shift+I"
+                        "INSERT · Esc"
                     } else {
                         "Message / INSERT"
                     }
                 } else if is_input_focused && !is_input_enabled {
                     if input_width < 36 {
-                        "COMMAND · Shift+I"
+                        "COMMAND · i"
                     } else {
                         "Message / COMMAND"
                     }
@@ -1408,23 +1409,16 @@ mod tests {
 
     #[test]
     fn shortcut_bar_keeps_complete_groups_within_display_width() {
-        let hints = [
-            ("Shift+I", "Write"),
-            ("Shift+F", "Resolve"),
-            ("Ctrl+H", "Help"),
-        ];
+        let hints = [("i", "Write"), ("Ctrl+K", "Actions"), ("Ctrl+H", "Help")];
         for width in 0..120 {
             let line = super::shortcut_bar(width, &hints);
             assert!(line.width() <= usize::from(width));
             let text = line.to_string();
-            assert_eq!(text.contains("Shift+F"), text.contains("Resolve"));
+            assert_eq!(text.contains("Ctrl+K"), text.contains("Actions"));
             assert_eq!(text.contains("Ctrl+H"), text.contains("Help"));
         }
-        assert_eq!(
-            super::shortcut_bar(15, &hints).to_string(),
-            " Shift+I  Write"
-        );
-        assert!(super::shortcut_bar(14, &hints).spans.is_empty());
+        assert_eq!(super::shortcut_bar(9, &hints).to_string(), " i  Write");
+        assert!(super::shortcut_bar(8, &hints).spans.is_empty());
         let line = super::shortcut_bar(80, &hints);
         assert_eq!(line.spans[0].style.bg, Some(PRIMARY_COLOR));
         assert_eq!(
@@ -1440,8 +1434,8 @@ mod tests {
                 let line = super::dispute_command_bar(width, insert, false, true);
                 assert!(line.width() <= usize::from(width));
                 let text = line.to_string();
-                if width >= 32 {
-                    assert!(text.contains(if insert { "Commands" } else { "Help" }));
+                if width >= 28 {
+                    assert!(text.contains(if insert { "Commands" } else { "Actions" }));
                 }
             }
             let controls = super::dispute_copy_controls(width);
@@ -1472,18 +1466,13 @@ mod tests {
             .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
             .expect("draw");
         let buffer = terminal.backend().buffer();
-        for label in ["Write", "Help", "Copy"] {
+        for label in ["Write", "Actions", "Help", "Copy"] {
             assert!(
                 buffer_contains(buffer, label),
                 "missing COMMAND label {label}"
             );
         }
-        for label in ["Resolve", "Recover", "Party"] {
-            assert!(
-                buffer_contains(buffer, label),
-                "missing chat-border label {label}"
-            );
-        }
+        assert!(buffer_contains(buffer, "Party"));
         assert!(buffer_contains(buffer, "Message / COMMAND"));
         assert!(!buffer_contains(buffer, "Shift+I: Enable"));
         assert!(!buffer_contains(buffer, "Shift+F: Resolve"));
@@ -1493,7 +1482,7 @@ mod tests {
             .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
             .expect("draw");
         let buffer = terminal.backend().buffer();
-        for label in ["Send", "Commands", "Help", "Copy"] {
+        for label in ["Send", "Commands", "Actions", "Help", "Copy"] {
             assert!(
                 buffer_contains(buffer, label),
                 "missing INSERT label {label}"
@@ -1504,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn party_filter_and_delete_hints_stay_on_the_chat_border() {
+    fn party_and_filter_hints_stay_on_the_chat_border() {
         let mut app = AppState::new(UserRole::Admin);
         app.admin_disputes_in_progress = vec![dispute("dip-border", "in-progress")];
         app.selected_dispute_id = Some("dip-border".to_string());
@@ -1517,19 +1506,17 @@ mod tests {
             .expect("draw");
 
         let buf = terminal.backend().buffer();
-        for label in ["Party", "Resolve", "Recover", "Remove"] {
-            assert!(
-                buffer_contains(buf, label),
-                "chat-border hint missing: {label}"
-            );
-        }
+        assert!(
+            buffer_contains(buf, "Party"),
+            "Tab party hint must stay on the chat border"
+        );
         assert!(
             buffer_contains(buf, "Finalized") || buffer_contains(buf, "In progress"),
             "filter toggle hint must stay on the chat border"
         );
         assert!(
-            buffer_contains(buf, "Write") || buffer_contains(buf, "Help"),
-            "primary command bar must remain visible"
+            buffer_contains(buf, "Actions"),
+            "Ctrl+K Actions must remain on the command bar"
         );
     }
 
@@ -1553,7 +1540,7 @@ mod tests {
             "attachment toast must reserve its own footer row"
         );
         assert!(
-            buffer_contains(buf, "Resolve") || buffer_contains(buf, "Write"),
+            buffer_contains(buf, "Actions") || buffer_contains(buf, "Write"),
             "command bar must remain visible with toast"
         );
         assert!(
@@ -1563,7 +1550,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_input_title_keeps_shift_i_mode_hint() {
+    fn narrow_input_title_keeps_i_and_esc_mode_hints() {
         let mut app = AppState::new(UserRole::Admin);
         app.admin_disputes_in_progress = vec![dispute("dip-narrow", "in-progress")];
         app.selected_dispute_id = Some("dip-narrow".to_string());
@@ -1577,8 +1564,8 @@ mod tests {
             .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
             .expect("draw");
         assert!(
-            buffer_contains(terminal.backend().buffer(), "COMMAND · Shift+I"),
-            "narrow COMMAND title must keep the Shift+I hint"
+            buffer_contains(terminal.backend().buffer(), "COMMAND · i"),
+            "narrow COMMAND title must keep the i hint"
         );
 
         app.admin_chat_input_enabled = true;
@@ -1586,8 +1573,8 @@ mod tests {
             .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
             .expect("draw");
         assert!(
-            buffer_contains(terminal.backend().buffer(), "INSERT · Shift+I"),
-            "narrow INSERT title must keep the Shift+I hint"
+            buffer_contains(terminal.backend().buffer(), "INSERT · Esc"),
+            "narrow INSERT title must keep the Esc hint"
         );
     }
 }

@@ -260,7 +260,7 @@ pub use validation::{
     validate_npub, validate_relay,
 };
 
-/// True when Disputes in Progress chat input should accept typing / paste.
+/// True when Disputes in Progress chat input should accept typing / paste (INSERT layer).
 fn admin_dispute_chat_input_active(app: &AppState) -> bool {
     matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress))
         && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
@@ -297,7 +297,7 @@ fn filter_pasted_chat_text(pasted_text: &str) -> String {
         .collect()
 }
 
-/// Append pasted text to the admin dispute chatbox when it is active.
+/// Append pasted text to the admin dispute chatbox when INSERT is active.
 ///
 /// Used by bracketed paste, right-click, and Ctrl/Cmd+V / Shift+Insert fallbacks.
 /// Returns `true` when text was appended.
@@ -346,7 +346,6 @@ fn handle_admin_chat_input(
         return None;
     }
 
-    let has_shift = key_event.modifiers.contains(KeyModifiers::SHIFT);
     let has_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
     let has_alt = key_event.modifiers.contains(KeyModifiers::ALT);
     let has_super = key_event.modifiers.contains(KeyModifiers::SUPER);
@@ -356,23 +355,7 @@ fn handle_admin_chat_input(
         return None;
     }
 
-    // Leave Shift+letter shortcuts for the Disputes in Progress handlers.
-    if has_shift
-        && matches!(
-            code,
-            KeyCode::Char('f')
-                | KeyCode::Char('F')
-                | KeyCode::Char('i')
-                | KeyCode::Char('I')
-                | KeyCode::Char('r')
-                | KeyCode::Char('R')
-                | KeyCode::Char('c')
-                | KeyCode::Char('C')
-        )
-    {
-        return None;
-    }
-
+    // INSERT accepts Shift+letter as capitals (COMMAND Shift chords are gated outside).
     match code {
         KeyCode::Char(c) => {
             app.admin_chat_input.push(c);
@@ -889,6 +872,98 @@ fn enter_order_chat_insert(app: &mut AppState) {
     app.order_chat_input_enabled = true;
 }
 
+fn enter_dispute_chat_insert(app: &mut AppState) {
+    app.admin_chat_input_enabled = true;
+}
+
+/// Disputes in Progress can open Ctrl+K / COMMAND shortcuts from Normal or Managing.
+fn admin_dispute_interactive(app: &AppState) -> bool {
+    matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress))
+        && matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::Normal) | UiMode::AdminMode(AdminMode::ManagingDispute)
+        )
+}
+
+/// Apply a Ctrl+K dispute-menu row (or letter jump) — same as COMMAND Shift/Del.
+fn apply_dispute_action_selection(
+    app: &mut AppState,
+    selected_index: usize,
+    disputes: &Arc<Mutex<Vec<Dispute>>>,
+) {
+    // Restore interactive mode so follow-up handlers see Managing/Normal again.
+    let previous = match &app.mode {
+        UiMode::DisputeActionsPopup { previous_mode, .. } => (**previous_mode).clone(),
+        other => other.clone(),
+    };
+    app.mode = previous;
+
+    match selected_index {
+        0 => {
+            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+                if let Some(selected_dispute) = selected_filtered_dispute(app) {
+                    if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
+                        app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                            dispute_id,
+                            selected_button_index: 0,
+                            bond: crate::util::order_utils::BondSlashChoice::None,
+                            slash_submenu_open: false,
+                            slash_submenu_index: 0,
+                        });
+                    }
+                }
+            } else {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "Open a dispute chat (Managing) to resolve.".to_string(),
+                ));
+            }
+        }
+        1 => {
+            admin_handlers::begin_recover_taken_disputes(app, disputes);
+        }
+        2 => {
+            app.dispute_filter = match app.dispute_filter {
+                DisputeFilter::InProgress => DisputeFilter::Finalized,
+                DisputeFilter::Finalized => DisputeFilter::InProgress,
+            };
+            app.selected_dispute_id = None;
+        }
+        3 => {
+            admin_handlers::begin_delete_admin_dispute(app);
+        }
+        _ => {}
+    }
+}
+
+/// Apply a Ctrl+K Observer menu row (or letter jump).
+fn apply_observer_action_selection(app: &mut AppState, selected_index: usize) {
+    let previous = match &app.mode {
+        UiMode::ObserverActionsPopup { previous_mode, .. } => (**previous_mode).clone(),
+        other => other.clone(),
+    };
+    app.mode = previous;
+
+    match selected_index {
+        0 => {
+            app.clear_observer_secrets();
+        }
+        1 => {
+            let has_attachments = app.observer_messages.iter().any(|m| m.attachment.is_some());
+            if has_attachments {
+                app.mode = UiMode::ObserverSaveAttachmentPopup(0);
+            } else {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "No attachments to save in this Observer chat.".to_string(),
+                ));
+            }
+        }
+        2 => {
+            app.observer_error = None;
+        }
+        _ => {}
+    }
+}
+
 /// Whether the selected My Trades order can switch Peer/Solver with Tab.
 fn my_trades_solver_channel_available(app: &AppState) -> bool {
     let rows = active_order_chat_list_snapshot(app);
@@ -1362,6 +1437,123 @@ pub fn handle_key_event(
             {
                 if let Some(idx) = crate::ui::trade_actions_popup::trade_action_index_for_key(c) {
                     apply_trade_action_selection(app, idx, order_id, pool, order_result_tx);
+                    return Some(true);
+                }
+                return Some(true);
+            }
+            _ => return Some(true),
+        }
+    }
+
+    // Disputes in Progress Ctrl+K action list
+    if let UiMode::DisputeActionsPopup {
+        selected_index,
+        previous_mode,
+    } = &app.mode
+    {
+        let selected_index = *selected_index;
+        let previous_mode = previous_mode.clone();
+        let count = crate::ui::dispute_actions_popup::dispute_action_count();
+        match code {
+            KeyCode::Esc => {
+                app.mode = *previous_mode;
+                return Some(true);
+            }
+            KeyCode::Up => {
+                let next = if selected_index == 0 {
+                    count.saturating_sub(1)
+                } else {
+                    selected_index - 1
+                };
+                app.mode = UiMode::DisputeActionsPopup {
+                    selected_index: next,
+                    previous_mode,
+                };
+                return Some(true);
+            }
+            KeyCode::Down => {
+                let next = if selected_index + 1 >= count {
+                    0
+                } else {
+                    selected_index + 1
+                };
+                app.mode = UiMode::DisputeActionsPopup {
+                    selected_index: next,
+                    previous_mode,
+                };
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                apply_dispute_action_selection(app, selected_index, disputes);
+                return Some(true);
+            }
+            KeyCode::Char(c)
+                if !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key_event.modifiers.contains(KeyModifiers::ALT)
+                    && !key_event.modifiers.contains(KeyModifiers::SUPER) =>
+            {
+                if let Some(idx) = crate::ui::dispute_actions_popup::dispute_action_index_for_key(c)
+                {
+                    apply_dispute_action_selection(app, idx, disputes);
+                    return Some(true);
+                }
+                return Some(true);
+            }
+            _ => return Some(true),
+        }
+    }
+
+    // Observer Ctrl+K action list
+    if let UiMode::ObserverActionsPopup {
+        selected_index,
+        previous_mode,
+    } = &app.mode
+    {
+        let selected_index = *selected_index;
+        let previous_mode = previous_mode.clone();
+        let count = crate::ui::observer_actions_popup::observer_action_count();
+        match code {
+            KeyCode::Esc => {
+                app.mode = *previous_mode;
+                return Some(true);
+            }
+            KeyCode::Up => {
+                let next = if selected_index == 0 {
+                    count.saturating_sub(1)
+                } else {
+                    selected_index - 1
+                };
+                app.mode = UiMode::ObserverActionsPopup {
+                    selected_index: next,
+                    previous_mode,
+                };
+                return Some(true);
+            }
+            KeyCode::Down => {
+                let next = if selected_index + 1 >= count {
+                    0
+                } else {
+                    selected_index + 1
+                };
+                app.mode = UiMode::ObserverActionsPopup {
+                    selected_index: next,
+                    previous_mode,
+                };
+                return Some(true);
+            }
+            KeyCode::Enter => {
+                apply_observer_action_selection(app, selected_index);
+                return Some(true);
+            }
+            KeyCode::Char(c)
+                if !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key_event.modifiers.contains(KeyModifiers::ALT)
+                    && !key_event.modifiers.contains(KeyModifiers::SUPER) =>
+            {
+                if let Some(idx) =
+                    crate::ui::observer_actions_popup::observer_action_index_for_key(c)
+                {
+                    apply_observer_action_selection(app, idx);
                     return Some(true);
                 }
                 return Some(true);
@@ -1915,18 +2107,52 @@ pub fn handle_key_event(
         return Some(true);
     }
 
-    // Handle Shift+F and Shift+I BEFORE other key processing to ensure they're not intercepted
-    // Check these BEFORE handle_admin_chat_input to prevent interception
+    // Disputes in Progress: Ctrl+K Actions, i → INSERT, COMMAND-layer Shift chords.
+    // Handled before admin chat input so INSERT typing does not steal them.
     if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
         let has_shift = key_event
             .modifiers
             .contains(crossterm::event::KeyModifiers::SHIFT);
+        let has_ctrl = key_event
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL);
+        let has_alt = key_event.modifiers.contains(KeyModifiers::ALT);
+        let has_super = key_event.modifiers.contains(KeyModifiers::SUPER);
+        let managing = matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+        let interactive = admin_dispute_interactive(app);
+        let in_command = interactive && !app.admin_chat_input_enabled;
 
-        // Handle Shift+F to open dispute finalization popup (check this first)
-        if has_shift && (code == KeyCode::Char('f') || code == KeyCode::Char('F')) {
-            // Only handle if we're in ManagingDispute mode
-            if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
-                // Open finalization popup if a dispute is selected
+        // Ctrl+K: dispute actions (INSERT and COMMAND), same as My Trades.
+        if has_ctrl
+            && !has_alt
+            && !has_super
+            && matches!(code, KeyCode::Char('k') | KeyCode::Char('K'))
+            && interactive
+        {
+            let previous = app.mode.clone();
+            app.mode = UiMode::DisputeActionsPopup {
+                selected_index: 0,
+                previous_mode: Box::new(previous),
+            };
+            return Some(true);
+        }
+
+        // Enter INSERT: bare i / Insert (COMMAND only while ManagingDispute).
+        if managing
+            && !app.admin_chat_input_enabled
+            && !has_ctrl
+            && !has_alt
+            && !has_super
+            && (matches!(code, KeyCode::Char('i') | KeyCode::Char('I'))
+                || (matches!(code, KeyCode::Insert) && !has_shift))
+        {
+            enter_dispute_chat_insert(app);
+            return Some(true);
+        }
+
+        // COMMAND-layer Shift shortcuts (disabled while INSERT so capitals type).
+        if has_shift && in_command {
+            if matches!(code, KeyCode::Char('f') | KeyCode::Char('F')) && managing {
                 if let Some(selected_dispute) = selected_filtered_dispute(app) {
                     if let Ok(dispute_id) = uuid::Uuid::parse_str(&selected_dispute.dispute_id) {
                         app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
@@ -1940,37 +2166,15 @@ pub fn handle_key_event(
                     }
                 }
             }
-        }
-
-        // Handle Shift+C to toggle between InProgress and Finalized filters
-        if has_shift && (code == KeyCode::Char('c') || code == KeyCode::Char('C')) {
-            // Toggle filter between InProgress and Finalized
-            app.dispute_filter = match app.dispute_filter {
-                DisputeFilter::InProgress => DisputeFilter::Finalized,
-                DisputeFilter::Finalized => DisputeFilter::InProgress,
-            };
-            // Reset selection when switching filters
-            app.selected_dispute_id = None;
-            return Some(true);
-        }
-
-        // Handle Shift+I to toggle chat input enabled/disabled
-        if has_shift
-            && (code == KeyCode::Char('i') || code == KeyCode::Char('I'))
-            && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
-        {
-            app.admin_chat_input_enabled = !app.admin_chat_input_enabled;
-            return Some(true);
-        }
-
-        // Shift+R: open orphan picker for relay in-progress disputes missing locally
-        if has_shift && (code == KeyCode::Char('r') || code == KeyCode::Char('R')) {
-            let can_recover = matches!(
-                app.mode,
-                UiMode::AdminMode(AdminMode::Normal)
-                    | UiMode::AdminMode(AdminMode::ManagingDispute)
-            );
-            if can_recover {
+            if matches!(code, KeyCode::Char('c') | KeyCode::Char('C')) {
+                app.dispute_filter = match app.dispute_filter {
+                    DisputeFilter::InProgress => DisputeFilter::Finalized,
+                    DisputeFilter::Finalized => DisputeFilter::InProgress,
+                };
+                app.selected_dispute_id = None;
+                return Some(true);
+            }
+            if matches!(code, KeyCode::Char('r') | KeyCode::Char('R')) {
                 admin_handlers::begin_recover_taken_disputes(app, disputes);
                 return Some(true);
             }
@@ -1990,16 +2194,9 @@ pub fn handle_key_event(
         }
 
         // Delete: remove selected dispute from local DB / sidebar (mirrors My Trades Delete).
-        if code == KeyCode::Delete {
-            let can_delete = matches!(
-                app.mode,
-                UiMode::AdminMode(AdminMode::Normal)
-                    | UiMode::AdminMode(AdminMode::ManagingDispute)
-            );
-            if can_delete {
-                admin_handlers::begin_delete_admin_dispute(app);
-                return Some(true);
-            }
+        if code == KeyCode::Delete && interactive && !app.admin_chat_input_enabled {
+            admin_handlers::begin_delete_admin_dispute(app);
+            return Some(true);
         }
     }
 
@@ -2169,12 +2366,36 @@ pub fn handle_key_event(
 
     // Check if we're in admin chat input mode FIRST - this takes priority over all other key handling
     // (except invoice and key input which are handled earlier)
-    // Note: Shift+F and Shift+I are handled before this, so they won't be intercepted
+    // Note: COMMAND Shift chords and Ctrl+K are handled before this.
     if let Some(result) = handle_admin_chat_input(app, code, &key_event) {
         return Some(result);
     }
     if let Some(result) = handle_user_order_chat_input(app, code, &key_event) {
         return Some(result);
+    }
+
+    // Observer: Ctrl+K Actions (Clear / Save / Dismiss error), then Shared key typing.
+    if matches!(app.active_tab, Tab::Admin(AdminTab::Observer))
+        && matches!(
+            app.mode,
+            UiMode::Normal | UiMode::AdminMode(AdminMode::Normal)
+        )
+    {
+        let has_ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+        let has_alt = key_event.modifiers.contains(KeyModifiers::ALT);
+        let has_super = key_event.modifiers.contains(KeyModifiers::SUPER);
+        if has_ctrl
+            && !has_alt
+            && !has_super
+            && matches!(code, KeyCode::Char('k') | KeyCode::Char('K'))
+        {
+            let previous = app.mode.clone();
+            app.mode = UiMode::ObserverActionsPopup {
+                selected_index: 0,
+                previous_mode: Box::new(previous),
+            };
+            return Some(true);
+        }
     }
 
     // Observer tab: handle all character and backspace input early so y/n/m/c etc. go to the field.
@@ -3461,7 +3682,7 @@ mod key_handler_tests {
     }
 
     #[test]
-    fn admin_chat_input_ignores_ctrl_and_shift_shortcut_chords() {
+    fn admin_chat_insert_ignores_ctrl_chords_and_types_shift_capitals() {
         let mut app = AppState::new(UserRole::Admin);
         app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
@@ -3474,18 +3695,27 @@ mod key_handler_tests {
         let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(handle_admin_chat_input(&mut app, ctrl_s.code, &ctrl_s).is_none());
 
-        let shift_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::SHIFT);
-        assert!(handle_admin_chat_input(&mut app, shift_f.code, &shift_f).is_none());
+        // INSERT: Shift+letter is a capital (COMMAND Shift chords gated outside).
+        let shift_f = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT);
+        assert_eq!(
+            handle_admin_chat_input(&mut app, shift_f.code, &shift_f),
+            Some(true)
+        );
+        assert_eq!(app.admin_chat_input, "F");
 
-        let shift_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SHIFT);
-        assert!(handle_admin_chat_input(&mut app, shift_c.code, &shift_c).is_none());
+        let shift_c = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT);
+        assert_eq!(
+            handle_admin_chat_input(&mut app, shift_c.code, &shift_c),
+            Some(true)
+        );
+        assert_eq!(app.admin_chat_input, "FC");
 
         let plain_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         assert_eq!(
             handle_admin_chat_input(&mut app, plain_a.code, &plain_a),
             Some(true)
         );
-        assert_eq!(app.admin_chat_input, "a");
+        assert_eq!(app.admin_chat_input, "FCa");
     }
 
     #[test]

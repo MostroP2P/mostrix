@@ -336,7 +336,14 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             {
                 app.order_chat_input_enabled = false;
             }
-            // Observer command bar advertises Esc → Clear (inline error).
+            // Esc on dispute chat INSERT → COMMAND (keep draft), like My Trades.
+            if matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress))
+                && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
+                && app.admin_chat_input_enabled
+            {
+                app.admin_chat_input_enabled = false;
+            }
+            // Observer: Esc dismisses inline error only (Ctrl+L Clear wipes all).
             if matches!(app.active_tab, Tab::Admin(AdminTab::Observer))
                 && app.observer_inputs_editable()
                 && app.observer_error.is_some()

@@ -102,13 +102,14 @@ Focused on dispute resolution and protocol management.
   - **Scrollable sidebar list** (`List` + `ListState`): ↑↓ keeps the selected dispute in view when many disputes overflow the sidebar; scrollbar when the list is taller than the panel
   - Finalization popup for resolution actions
   - **Empty state**: When no disputes are available, displays helpful key hints footer (filter + `↑↓: Select Dispute | Ctrl+H: Help`); footer is width-aware (narrow terminals show only Ctrl+H).
+  - **Keycap command bar**: Same INSERT/COMMAND pattern as My Trades — **i** / Esc for typing vs shortcuts; **Ctrl+K** Actions (Resolve / Recover / Filter / Remove). See [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md).
 - **Observer**: Read-only workspace for inspecting user-to-user encrypted chats via a disclosed **Shared key** (protocol `K_conv`):
   - **Shared key** input (64-char hex secret, paste-friendly). There is currently no UI field for the optional Signer pubkey (`pub(K_sign)`) locator, so `fetch_observer_chat` is always called with `sign_pubkey: None`.
   - Fetches kind-14 chat events from relays for the last 7 days (`#p = pub(K_conv)`)
   - Decrypts messages and maps sender pubkeys to Buyer/Seller/Admin roles automatically
   - Displays chat using the same formatting as the dispute chat (color-coded, right-aligned Buyer/Seller, left-aligned Admin)
   - Supports file/image attachments with `Ctrl+S` to save (same popup as dispute chat)
-  - Keyboard hints: `Enter` to fetch chat, `Ctrl+C` to select a message to copy, `Ctrl+L` to clear all, `Ctrl+S` to save attachment, `Ctrl+H` for help
+  - Keyboard hints: `Enter` Load, **`Ctrl+L` Clear** (full wipe — not Esc), `Ctrl+C` Copy, `Ctrl+H` Help, **`Ctrl+K` Actions** (Clear all / Save attachment / Dismiss error); **`Esc` Dismiss** clears the inline error only when one is shown
 - **Settings**: Role-specific configuration including:
   - Add Dispute Solver
   - Change Admin Key (set `admin_privkey` to the Mostro daemon nsec)
@@ -193,7 +194,7 @@ if let UiMode::OperationResult(result) = &app.mode {
 **Help popup (Ctrl+H)**:
 
 - **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.).
-- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows filter toggle, Tab/Enter/Shift+I/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes PgUp/PgDn/End chat scroll, **Shift+K** (reveal Shared key for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, it lists Enter to load chat, paste, scroll, clear, and save-attachment shortcuts (Left/Right still change tabs).
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows INSERT/COMMAND (`i` / Esc), **Ctrl+K** Actions, Tab/Enter/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes Ctrl+I/Esc INSERT/COMMAND, **Ctrl+K** trade actions, PgUp/PgDn/End chat scroll, **Shift+K** (reveal Shared key for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, it lists Enter Load, **Ctrl+L** Clear, **Esc** Dismiss error, **Ctrl+K** Actions, paste, scroll, and save-attachment shortcuts (Left/Right still change tabs).
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
 
@@ -255,21 +256,21 @@ The `handle_key_event` function dispatches keys based on the current `UiMode`.
     - **Payment method picker** (`PaymentMethodPicker` on `FormState`, `form_input::handle_payment_method_picker_key` — interceptor next to the currency one): on **Method**, **Enter** / **Space** / typing opens a multi-select dropdown of standard methods for the current fiat (bundled `src/ui/payment_methods.json`, Mostro Mobile snapshot plus extras such as Satispay on EUR). **↑/↓** move, **Enter** toggles a listed method or adds a sanitized custom name (`+ add custom` row), **Space** with an empty filter also toggles, **Esc** keeps the selection. While closed, **Backspace** is consumed so it cannot silently rewrite the comma-separated value. The field stores a comma-separated string for protocol submit.
     - **Submit**: **Enter** on a complete form opens `ConfirmingOrder` (YES/NO); **Esc** cancels and clears `order_form_draft`.
     - **Draft persistence**: **Left** / **Right** tab navigation silently saves the form to `AppState.order_form_draft` and switches tabs. Returning to Create New Order restores the draft (`navigation::restore_or_new_form`, auto-init in `draw.rs` when tab is active in `Normal` mode).
-  - **Global shortcut guard**: `c` / `C` (copy invoice) is handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), that key is routed to form typing instead. On **Currency** and **Payment Method**, the picker interceptors run first and consume most keys while the dropdown is open. Outside the form, `c` still copies PayInvoice / PayBondInvoice invoices. Observer clear uses **Ctrl+L** only when its input is editable, never behind a popup. Confirmation popups confirm with **Enter** on the focused button and cancel with **Esc** only (the `y` / `n` shortcuts were removed).
+  - **Global shortcut guard**: `c` / `C` (copy invoice) is handled before the generic `Char(_)` arm in `key_handler/mod.rs`. When a **text** field is focused (`is_creating_order_text_input` in `form_input.rs` — any field except **Order Type**), that key is routed to form typing instead. On **Currency** and **Payment Method**, the picker interceptors run first and consume most keys while the dropdown is open. Outside the form, `c` still copies PayInvoice / PayBondInvoice invoices. Observer **Ctrl+L** Clear runs when no popup is open (full wipe); **Esc** only dismisses the inline Observer error. Confirmation popups confirm with **Enter** on the focused button and cancel with **Esc** only (the `y` / `n` shortcuts were removed).
 - **Invoices**: `handle_invoice_input` handles text entry for Lightning invoices, including support for bracketed paste mode.
 - **Paste support**: The event loop now centralizes paste routing for active inputs and supports:
   - `Event::Paste(...)` (bracketed paste; enabled at startup via `EnableBracketedPaste`)
   - mouse right-click paste (`MouseEventKind::Down(MouseButton::Right)`) using clipboard read fallback
   - key fallbacks: **Ctrl+V** / **Ctrl+Shift+V** / **Cmd+V** / **Shift+Insert** where bracketed paste is unavailable
-  This applies to invoice input, admin key/solver inputs, the Observer Shared key field, and the **Disputes in Progress** admin chatbox.
+  This applies to invoice input, admin key/solver inputs, the Observer Shared key field, and the **Disputes in Progress** / **My Trades** chatboxes (INSERT only).
 - **Admin Chat**: `handle_admin_chat_input` handles direct text input in the "Disputes in Progress" tab:
   - Takes priority over other input handling (except invoice and key input)
-  - Supports direct character input, backspace, and paste (see above)
-  - Ignores **Ctrl/Alt/Cmd** chords and **Shift+F/I/R/C** so those shortcuts are never typed into the box
+  - Supports direct character input, backspace, and paste when **INSERT** (see above)
+  - **Ctrl+K**, **i**/Insert, and COMMAND Shift chords are handled *before* chat input so they are never typed into the box
   - Dynamic input box that grows from 1 to 10 lines
   - Text wrapping with word boundary detection
-  - **Input toggle**: Press **Shift+I** to enable/disable chat input (prevents accidental typing)
-  - **Visual feedback**: Input title shows enabled/disabled state
+  - **INSERT / COMMAND**: Press **i** (or Insert) to type; **Esc** returns to COMMAND (draft kept). Titles show `Message / INSERT` or `Message / COMMAND`
+  - **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (works in both layers)
 - **Copy to Clipboard**: Pressing `C` in a `PayInvoice` or `PayBondInvoice` notification, or in the My Trades **Shift+K** Shared key disclosure popup, uses the `arboard` crate (`handle_clipboard_copy` in `src/ui/key_handler/mod.rs`) to copy the invoice or the Shared key hex respectively. Only the Shared key is copyable from the disclosure popup — the signing key is never copied (and never displayed). The write runs synchronously and reports the real result: `copied_to_clipboard` (and the "✓ ... copied!" confirmation) is only set once `arboard::Clipboard::new()` and `set_text()` actually succeed; a failed write leaves the popup showing "Press C to copy" instead of a false success message. Persistence beyond that call is handled by the platform backend without blocking on it — the shared clipboard worker thread `arboard` starts on X11, or the background process `wl-clipboard-rs` detaches on Wayland.
 - **Exit Confirmation**: Pressing `Q` or selecting the Exit tab shows a confirmation popup before exiting the application. Use Left/Right to select Yes/No, Enter to confirm, or Esc to cancel.
 - **Help popup**: Press **Ctrl+H** (in normal or managing-dispute mode) to open a centered overlay with all keyboard shortcuts for the current tab. Press Esc, Enter, or Ctrl+H to close.
@@ -390,7 +391,7 @@ they do not write to the operating system clipboard.
 - In every supported conversation, copy multiline Unicode text, leading/trailing
   spaces, and a long invoice/key/order ID. Paste into an external editor and
   compare the exact text. Check attachment filenames where attachments exist.
-- In writable chats, start a draft with input enabled and disabled. Copy and
+- In writable chats, start a draft in INSERT and in COMMAND. Copy and
   cancel selections, then resume the original layer. Verify no unintended send,
   paste, attachment action, or conversation switch occurred.
 - Resize to narrow and short panels and receive another message while selecting.
@@ -536,19 +537,21 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
 - **Attachments (receive + transcript)**: encrypted file/image messages show as yellow lines with 🖼/📎 icons; the block title adds a file count; a yellow toast appears on new **peer** relay merges. Transcripts under `~/.mostrix/orders_chat/` persist attachment metadata as **JSON** so **Ctrl+S** works after restart (legacy placeholder lines hydrate from relay). **Ctrl+S** opens the save popup (see above).
 - **Attachments (send)**: **Ctrl+O** opens `UserSendAttachmentPicker` (`ratatui-explorer` in `src/ui/send_attachment_picker.rs`); **Enter** on a file enqueues `SendOrderAttachmentJob::FromPath` on `send_order_attachment_tx`. Backend in `src/util/send_attachment.rs`: validate → encrypt (shared key) → Blossom upload (NIP-24242 auth signed with **order trade key**) → shared-key DM. **Ctrl+Shift+O** enqueues `RetryPrepared` when `AppState.pending_order_attachment_sends` has the selected order (upload ok / DM failed). `sending_attachment_order_id` blocks duplicate sends while in flight; cleared only by attachment-specific `OperationResult` variants in `order_ch_mng.rs`, not by unrelated errors on `order_result_tx`.
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
-- **Footer shortcuts (width-aware)**:
-  - **Shift+I** toggles chat input.
-  - **Shift+C** cooperative cancel (YES/NO popup).
-  - **Shift+F** mark fiat sent (YES/NO popup).
-  - **Shift+R** release sats (YES/NO popup).
+- **Keycap command bar + footer shortcuts (width-aware)**:
+  - **INSERT / COMMAND**: **Ctrl+I** / **i** / Insert enter INSERT (type freely); **Esc** returns to COMMAND (draft kept). Keycaps show `i Write` / `Enter Send · Esc Commands` accordingly.
+  - **Ctrl+K Actions**: trade-action list (Cancel / Fiat sent / Release / Dispute / …) — same outcomes as COMMAND Shift chords; works in INSERT and COMMAND.
+  - **Shift+C** cooperative cancel (YES/NO popup; COMMAND).
+  - **Shift+F** mark fiat sent (YES/NO popup; COMMAND).
+  - **Shift+R** release sats (YES/NO popup; COMMAND).
+  - **Shift+D** open dispute (COMMAND).
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
-  - **Shift+U** refresh order details from Mostro (refused for full-privacy trades — identity-scoped `Action::Orders` must not link a private order id).
+  - **Shift+U** refresh order details from Mostro (COMMAND; refused for full-privacy trades — identity-scoped `Action::Orders` must not link a private order id).
   - **Shift+K** reveal Shared key (read-only grant for solvers; never the signing key). Opens a popup where **C** copies the Shared key to the clipboard.
   - **PgUp/PgDn** scroll chat history; **End** jump to bottom.
   - **Ctrl+S** save attachment (when the selected order has attachments).
   - **Ctrl+O** send attachment (file picker); **Ctrl+Shift+O** retry DM when a prepared send is pending.
   - **Sending attachment…** (`FOOTER_SENDING_ATTACHMENT`) while `sending_attachment_order_id` matches the selected order.
-  - **Shift+H** opens the shortcuts popup for the current tab.
+  - **Ctrl+H** opens the shortcuts popup for the current tab.
 - **Projection vs static**: the DM-based list row (`OrderChatListItem` in `src/ui/helpers/order_chat_projection.rs`) holds **live** fields only: `status`, first-seen **economic** snapshot from `Payload::Order` (amount, fiat, payment, premium), `trade_index` (from any message in the order), and buyer/seller **trade pubkeys** plus **reputation** from `Payload::Peer`. It no longer carries kind, `created_at`, or initiator metadata (those are on `order_chat_static` above).
 - **Selection correctness (shared projection)**: both the sidebar list and Enter/send handlers derive the selected order from the same projection (`helpers::build_active_order_chat_list`), with identical filtering and ordering. This prevents UI/action desync where `selected_order_chat_idx` could resolve a different trade than the highlighted row. **Trade ID** in the header still falls back to projection `trade_index` if a static entry is not yet in the map (e.g. race before the result handler runs).
 
@@ -618,8 +621,8 @@ pub struct AdminChatLastSeen {
 #### UI Features
 
 - **Dispute selection**: `selected_dispute_id` + `selected_filtered_dispute` — send/finalize/attachments always target the sidebar highlight under the current filter.
-- **Direct input**: Type immediately without mode switching (when input enabled).
-- **Input toggle**: Press **Shift+I** to enable/disable chat input.
+- **INSERT / COMMAND**: Press **i** (or Insert) to type; **Esc** returns to COMMAND. Aligned with My Trades keycap command bar.
+- **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (`src/ui/dispute_actions_popup.rs`).
 - **Dynamic sizing**: Input box grows from 1 to 10 lines based on content.
 - **Text wrapping**: Intelligent word-boundary wrapping with trim behavior.
 - **Scrolling**:
@@ -630,7 +633,7 @@ pub struct AdminChatLastSeen {
 - **Party filtering**:
   - Admin messages are only shown in the chat view of the party they were sent to (based on `target_party`).
   - Buyer/Seller messages are only shown in their respective chat views.
-- **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes, input state indicators.
+- **Visual feedback**: Focus indicators, color-coded messages, alignment prefixes, `Message / INSERT` vs `Message / COMMAND` titles.
 
 #### Input Handling Priority
 
@@ -638,11 +641,11 @@ The key handler processes input in this order:
 
 1. Invoice input (highest priority, when in invoice mode).
 2. Key input (for settings popups).
-3. **Shift+I toggle** (for enabling/disabling admin chat input).
-4. **Admin chat input** (takes priority in Disputes in Progress tab, only when enabled).
+3. **Ctrl+K Actions**, **i**/Insert → INSERT, and COMMAND Shift/Delete chords (Disputes in Progress).
+4. **Admin chat input** (INSERT only — `admin_chat_input_enabled`).
 5. Other character/form input.
 
-**Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, Shift+I toggle).
+**Source**: `src/ui/key_handler/mod.rs` (`handle_admin_chat_input`, dispute INSERT/COMMAND + Ctrl+K), `src/ui/dispute_actions_popup.rs`.
 
 #### Kind-14 Chat Internals (Shared Key Model)
 

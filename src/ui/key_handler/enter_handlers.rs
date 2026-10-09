@@ -562,7 +562,9 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             // Close help / settings reference (mode restored in key_handler/mod.rs)
             true
         }
-        UiMode::TradeActionsPopup { previous_mode, .. } => {
+        UiMode::TradeActionsPopup { previous_mode, .. }
+        | UiMode::DisputeActionsPopup { previous_mode, .. }
+        | UiMode::ObserverActionsPopup { previous_mode, .. } => {
             // Enter is handled in key_handler/mod.rs; restore if we somehow land here.
             app.mode = *previous_mode;
             true

@@ -15,7 +15,7 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## UI & order flows
 
-- **TUI Interface**: [TUI_INTERFACE.md](TUI_INTERFACE.md) — Navigation, modes, state; **Orders** id-based selection + stateful table scroll; **Create New Order** (sectioned form, live preview receipt, searchable currency picker from instance or `currencies.rs`, silent draft persistence, inline validation); **Settings** → **Restore Session** (post-restore hydrate without restart); **My Trades** (`user_my_trades_interactive`, scroll, receive attachments + Ctrl+S save, **Ctrl+O** send picker + **Ctrl+Shift+O** retry, `order_chat_static` vs live projection); Messages timeline (`StepPendingOrder` = no highlighted column while `Pending` / `WaitingTakerBond` / `WaitingMakerBond`)
+- **TUI Interface**: [TUI_INTERFACE.md](TUI_INTERFACE.md) — Navigation, modes, state; **Orders** id-based selection + stateful table scroll; **Create New Order** (sectioned form, live preview receipt, searchable currency picker from instance or `currencies.rs`, silent draft persistence, inline validation); **Settings** → **Restore Session** (post-restore hydrate without restart); **My Trades** / **Disputes in Progress** / **Observer** keycap command bars (INSERT/COMMAND, **Ctrl+K** Actions; Observer **Ctrl+L** Clear vs **Esc** Dismiss); My Trades scroll, attachments (**Ctrl+S** / **Ctrl+O** / **Ctrl+Shift+O**), `order_chat_static` vs live projection; Messages timeline (`StepPendingOrder` = no highlighted column while `Pending` / `WaitingTakerBond` / `WaitingMakerBond`)
 - **UI constants** (`src/ui/constants.rs`): Shared copy (footers, help, **`StepLabel`** for the Messages tab buy/sell timeline)
 - **Buy order flow (spec)**: [buy order flow.md](buy%20order%20flow.md) — Phase 1.5+ taker bond and Phase 5+ maker bond (`PayBondInvoice` / `WaitingTakerBond` / `WaitingMakerBond`)
 - **Sell order flow (spec)**: [sell order flow.md](sell%20order%20flow.md) — Phase 1.5+ taker bond and Phase 5+ maker bond (`PayBondInvoice` / `WaitingTakerBond` / `WaitingMakerBond`)
@@ -23,8 +23,8 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## Admin
 
-- **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) — Tabs, kind-14 dispute chat (`K_conv` / `K_sign`), Observer `K_conv` disclosure, workflows; **id-based dispute selection** (`dispute_selection.rs`) + scrollable sidebar list
-- **Finalize disputes**: [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) — Inline finalize popup (💰 pay / ↩️ refund, inner **Admin settle** / **Admin cancel**); admin `wait_for_dm` + `CantDo`; multi-line success popup; trader **AddBondInvoice** payout with follow-up popup (`OpenInvoicePopup` / `PaymentRequestRequired`)
+- **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) — Tabs, kind-14 dispute chat (`K_conv` / `K_sign`), Observer `K_conv` disclosure, workflows; **id-based dispute selection** (`dispute_selection.rs`) + scrollable sidebar; dispute/Observer **keycap bars** (`i`/Esc INSERT/COMMAND, **Ctrl+K** Actions; Observer **Ctrl+L** Clear / **Esc** Dismiss)
+- **Finalize disputes**: [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) — Inline finalize popup (💰 pay / ↩️ refund, inner **Admin settle** / **Admin cancel**); open via Shift+F or **Ctrl+K → F**; admin `wait_for_dm` + `CantDo`; multi-line success popup; trader **AddBondInvoice** payout with follow-up popup (`OpenInvoicePopup` / `PaymentRequestRequired`)
 
 ## Contributing & tooling
 

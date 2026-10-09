@@ -38,9 +38,14 @@ pub const HELP_DIP_END_BOTTOM: &str = "End: Jump to bottom of chat";
 pub const HELP_DIP_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve (finalize) dispute";
 pub const HELP_DIP_SHIFT_R_RECOVER: &str =
     "Shift+R: Pick missing taken disputes to recover (↑↓ Space Enter)";
-pub const HELP_DIP_SHIFT_I_INPUT: &str = "Shift+I: Enable/disable message input";
+/// INSERT / COMMAND for dispute chat (name kept for call-site stability; not Shift+I).
+pub const HELP_DIP_SHIFT_I_INPUT: &str =
+    "i / Insert: Enter INSERT (type message; capitals OK). Esc: leave → COMMAND";
+/// Ctrl+K dispute actions (same outcomes as COMMAND Shift/Delete shortcuts).
+pub const HELP_DIP_CTRL_K_ACTIONS: &str =
+    "Ctrl+K: Dispute actions (Resolve / Recover / Filter / Remove)";
 pub const HELP_DIP_DELETE_LOCAL: &str = "Delete: Remove selected dispute from local DB (sidebar)";
-pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when input enabled)";
+pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when INSERT)";
 #[cfg(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -48,12 +53,12 @@ pub const HELP_DIP_ENTER_SEND: &str = "Enter: Send message (when input enabled)"
     target_os = "netbsd"
 ))]
 pub const HELP_DIP_PASTE_CHAT: &str =
-    "Ctrl+Shift+V / Shift+Insert / right-click: Paste into message input";
+    "Ctrl+Shift+V / Shift+Insert / right-click: Paste into message (INSERT)";
 #[cfg(target_os = "windows")]
 pub const HELP_DIP_PASTE_CHAT: &str =
-    "Ctrl+V / Shift+Insert / right-click: Paste into message input";
+    "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
 #[cfg(target_os = "macos")]
-pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message input";
+pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message (INSERT)";
 #[cfg(not(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -63,7 +68,7 @@ pub const HELP_DIP_PASTE_CHAT: &str = "Cmd+V / right-click: Paste into message i
     target_os = "macos"
 )))]
 pub const HELP_DIP_PASTE_CHAT: &str =
-    "Ctrl+V / Shift+Insert / right-click: Paste into message input";
+    "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
 pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 pub const CHAT_COPY_START: &str = "Ctrl+C:Copy";
 pub const CHAT_COPY_HINT: &str = "↑↓:Extend Enter:Copy Esc:Cancel";
@@ -108,8 +113,13 @@ pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Cmd+V: Paste into Shared key field"
 pub const HELP_OBS_PASTE_SHARED_KEY: &str = "Ctrl+V: Paste into Shared key field";
 pub const HELP_OBS_SCROLL_LINE: &str = "↑↓: Scroll messages";
 pub const HELP_OBS_SCROLL_PAGE: &str = "PgUp/PgDn: Scroll page";
-pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Clear error";
-pub const HELP_OBS_CTRL_L_CLEAR: &str = "Ctrl+L: Clear all";
+/// Esc only clears the inline error; Shared key and messages stay (use Ctrl+L to wipe).
+pub const HELP_OBS_ESC_CLEAR_ERR: &str = "Esc: Dismiss inline error (does not clear Shared key)";
+/// Full Observer wipe (`clear_observer_secrets`); keycap label is Clear, not Esc.
+pub const HELP_OBS_CTRL_L_CLEAR: &str = "Ctrl+L: Clear all (Shared key, messages, error)";
+/// Ctrl+K Observer actions (Clear all / Save attachment / Dismiss error).
+pub const HELP_OBS_CTRL_K_ACTIONS: &str =
+    "Ctrl+K: Observer actions (Clear all / Save attachment / Dismiss error)";
 pub const HELP_OBS_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment";
 
 // Help popup lines (Settings)
@@ -237,7 +247,9 @@ pub const FOOTER_ENTER_SEND: &str = "Enter: Send";
 pub const FOOTER_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve";
 pub const FOOTER_SHIFT_R_RECOVER: &str = "Shift+R: Recover";
 pub const FOOTER_DELETE_LOCAL: &str = "Del: Remove";
+/// Obsolete Shift+I toggle copy; live UIs use `i` / Esc INSERT/COMMAND keycaps.
 pub const FOOTER_SHIFT_I_DISABLE: &str = "Shift+I: Disable";
+/// Obsolete Shift+I toggle copy; live UIs use `i` / Esc INSERT/COMMAND keycaps.
 pub const FOOTER_SHIFT_I_ENABLE: &str = "Shift+I: Enable";
 pub const FOOTER_PGUP_PGDN_SCROLL: &str = "PgUp/PgDn: Scroll";
 pub const FOOTER_END_BOTTOM: &str = "End: Bottom";
