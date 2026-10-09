@@ -335,10 +335,14 @@ fn compact_observer_help(inner_width: u16, inner_height: u16) -> Vec<Line<'stati
     }
 
     let (title_style, _) = settings_instruction_block_style();
-    // Pack essentials first so Ctrl+L / Ctrl+S / Ctrl+C survive the shortest viewports.
-    let candidate_rows: &[&str] = if width < 36 || available_rows <= 3 {
-        // Two-row pack for 20x8: load/copy start, then copy nav/cancel + clear/save.
-        &["Enter Ctrl+C ↑↓", "Esc Ctrl+L Ctrl+S"]
+    // Essentials first (fit on 20x8), then fill remaining height with feasible extras.
+    let candidate_rows: &[&str] = if width < 36 {
+        &[
+            "Enter Ctrl+C ↑↓",
+            "Esc Ctrl+L Ctrl+S",
+            "↑↓ PgUp/PgDn: Scroll",
+            HELP_OBS_PASTE_SHARED_KEY,
+        ]
     } else {
         &[
             "Enter: Load Shared key",
@@ -861,6 +865,23 @@ mod help_content_tests {
             "copy-cancel plus clear/save guidance missing at 20x8: {}",
             buffer_text(buffer)
         );
+    }
+
+    #[test]
+    fn tall_narrow_observer_help_fills_available_rows_with_scroll_and_paste() {
+        let app = AppState::new(UserRole::Admin);
+        let mut terminal = Terminal::new(TestBackend::new(20, 24)).unwrap();
+        terminal
+            .draw(|frame| render_help_popup(frame, &app, Tab::Admin(AdminTab::Observer)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for expected in ["Ctrl+C", "Ctrl+L", "Ctrl+S", "PgUp", "PgDn", "Paste"] {
+            assert!(
+                buffer_contains(buffer, expected),
+                "missing {expected} at 20x24: {}",
+                buffer_text(buffer)
+            );
+        }
     }
 
     #[test]

@@ -280,18 +280,16 @@ With no popup open, focus one of these chat views and press **Ctrl+C**:
 
 | View | Available conversations | First selected message |
 | --- | --- | --- |
-| Disputes in Progress | Selected active dispute, BUYER or SELLER pane | Topmost visible message in that party's pane |
-| Solver DMs | SERBERO pane of the selected active dispute | Topmost visible DM (newest-first display) |
-| My Trades | Selected trade, Peer or available Solver channel | Topmost visible message in that channel |
-| Observer | Loaded conversation for the current Shared key | Topmost visible message, across all parties |
+| Disputes in Progress | Selected active dispute, BUYER or SELLER pane | First displayed message in that party's transcript |
+| Solver DMs | SERBERO pane of the selected active dispute | Newest DM, matching the newest-first display |
+| My Trades | Selected trade, Peer or available Solver channel | First displayed message in that channel |
+| Observer | Loaded conversation for the current Shared key | First displayed message, across all parties |
 
 Ordinary chat transcripts display oldest first. Finalized dispute views and the
 Messages tab's trade timeline are not copy-selection targets.
 
-1. **Ctrl+C** selects the topmost message currently visible in the chat pane
-  (not the first message of the whole history), including when chat input is
-  enabled. In a long chat scrolled near the bottom, selection starts in that
-  viewport so you can copy a nearby block without jumping to the top.
+1. **Ctrl+C** selects the first message in display order, including when chat
+  input is enabled.
 2. **Up/Down** move the cursor through messages without wrapping at either end.
   Every message from the starting message through the cursor stays highlighted.
   The cursor end stays visible during resizing and incoming messages; an
@@ -305,9 +303,10 @@ newlines. It does not add displayed timestamps, sender labels, wrapping, or
 styling. Multiple selected messages are separated by a blank line. Solver DMs
 include their full stored text, including the header omitted by the renderer.
 For an attachment, **Enter copies its stored filename**, not its URL, encrypted
-metadata, file contents, or display placeholder. An empty filename reports
-**No filename to copy** without writing to the clipboard. Use **Ctrl+S** outside
-selection mode to save attachments instead.
+metadata, file contents, or display placeholder. If any selected attachment has
+an empty filename, the whole range fails with **No filename to copy** and
+nothing is written to the clipboard. Use **Ctrl+S** outside selection mode to
+save attachments instead.
 
 Selection does not change the draft, its owning conversation, or the enabled/
 disabled input layer. Typing, key/bracketed/mouse paste, sending, attachments,
@@ -315,7 +314,9 @@ help, tab/channel switching, and other commands are suspended until selection
 ends. Repeated **Ctrl+C** does not restart an active selection. Existing invoice,
 seed, and Shared key popup copy shortcuts remain unchanged.
 
-If the selected conversation or message becomes invalid, selection is cancelled.
+If the selected conversation or any message in the highlighted range becomes
+invalid (including an interior message whose identity or content changes),
+selection is cancelled.
 The next key is consumed to prevent an intended copy from sending a draft,
 fetching a conversation, or confirming a popup. Paste is also blocked while this
 cancellation is pending. An empty or loading transcript reports **No messages to

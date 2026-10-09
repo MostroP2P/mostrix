@@ -334,6 +334,13 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             {
                 app.order_chat_input_enabled = false;
             }
+            // Observer help/footer advertise Esc clears the inline error.
+            if matches!(app.active_tab, Tab::Admin(AdminTab::Observer))
+                && app.observer_inputs_editable()
+                && app.observer_error.is_some()
+            {
+                app.observer_error = None;
+            }
             true
         }
     }
@@ -343,6 +350,16 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
 mod tests {
     use super::handle_esc_key;
     use crate::ui::{AdminMode, AdminTab, AppState, Tab, UiMode, UserMode, UserRole, UserTab};
+
+    #[test]
+    fn esc_clears_observer_error_outside_copy_selection() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::Observer);
+        app.mode = UiMode::AdminMode(AdminMode::Normal);
+        app.observer_error = Some("relay failed".into());
+        assert!(handle_esc_key(&mut app));
+        assert!(app.observer_error.is_none());
+    }
 
     #[test]
     fn esc_closes_recover_taken_disputes_picker() {

@@ -3,9 +3,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::ui::helpers::{
-    first_visible_message_index, message_visible_for_party, selected_filtered_dispute,
-};
+use crate::ui::helpers::{message_visible_for_party, selected_filtered_dispute};
 use crate::ui::key_handler::chat_helpers::live_order_chat_draft_target;
 use crate::ui::key_handler::{copy_to_native_clipboard, NativeClipboardOutcome};
 use crate::ui::terminal::copy_with_osc52;
@@ -33,6 +31,8 @@ pub(crate) struct ChatCopySession {
     event_id: Option<String>,
     anchor_fingerprint: [u8; 32],
     anchor_event_id: Option<String>,
+    /// Fingerprints for every message in the current inclusive range (display order).
+    range_fingerprints: Vec<[u8; 32]>,
 }
 
 pub(crate) struct ChatCopyFeedback {
@@ -200,6 +200,24 @@ fn selection_bounds(session: &ChatCopySession) -> (usize, usize) {
     )
 }
 
+fn range_fingerprints_for(
+    app: &AppState,
+    target: &ChatCopyTarget,
+    start: usize,
+    end: usize,
+) -> Vec<[u8; 32]> {
+    messages(app, target)
+        .skip(start)
+        .take(end.saturating_sub(start).saturating_add(1))
+        .map(fingerprint)
+        .collect()
+}
+
+fn refresh_range_fingerprints(app: &AppState, session: &mut ChatCopySession) {
+    let (start, end) = selection_bounds(session);
+    session.range_fingerprints = range_fingerprints_for(app, &session.target, start, end);
+}
+
 pub(crate) fn validate_selection(app: &mut AppState) {
     let Some(mut session) = app.chat_copy_session.take() else {
         return;
@@ -230,10 +248,14 @@ pub(crate) fn validate_selection(app: &mut AppState) {
     if let (Some(cursor), Some(anchor)) = (cursor, anchor) {
         session.selected_index = cursor;
         session.anchor_index = anchor;
-        app.chat_copy_session = Some(session);
-    } else {
-        app.chat_copy_cancelled = true;
+        let (start, end) = selection_bounds(&session);
+        let current = range_fingerprints_for(app, &session.target, start, end);
+        if current == session.range_fingerprints {
+            app.chat_copy_session = Some(session);
+            return;
+        }
     }
+    app.chat_copy_cancelled = true;
 }
 
 pub(crate) fn selected_index(app: &AppState) -> Option<usize> {
@@ -364,12 +386,22 @@ fn handle_key_with_result(
             KeyCode::Esc => return true,
             KeyCode::Enter => {
                 let (start, end) = selection_bounds(&session);
-                let parts: Vec<String> = messages(app, &session.target)
+                let selected: Vec<_> = messages(app, &session.target)
                     .skip(start)
                     .take(end.saturating_sub(start).saturating_add(1))
-                    .filter_map(copy_text_for_message)
                     .collect();
-                let feedback = if parts.is_empty() {
+                let mut parts = Vec::with_capacity(selected.len());
+                let mut missing_filename = false;
+                for message in selected {
+                    match copy_text_for_message(message) {
+                        Some(text) => parts.push(text),
+                        None => {
+                            missing_filename = true;
+                            break;
+                        }
+                    }
+                }
+                let feedback = if missing_filename || parts.is_empty() {
                     "No filename to copy"
                 } else {
                     match copy(parts.join("\n\n")) {
@@ -400,6 +432,7 @@ fn handle_key_with_result(
                     session.event_id = message.event_id.map(str::to_owned);
                     session.fingerprint = fingerprint(message);
                 }
+                refresh_range_fingerprints(app, &mut session);
             }
             _ => {}
         }
@@ -411,54 +444,30 @@ fn handle_key_with_result(
         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
     {
         if let Some(target) = focused_target(app) {
-            let count = messages(app, &target).count();
-            if count == 0 {
-                app.chat_copy_feedback = Some(ChatCopyFeedback {
-                    target,
-                    text: "No messages to copy",
-                });
-                return true;
-            }
-            let start = viewport_start_index(app, &target).min(count.saturating_sub(1));
-            let started = messages(app, &target)
-                .nth(start)
+            let first = messages(app, &target)
+                .next()
                 .map(|message| (message.event_id.map(str::to_owned), fingerprint(message)));
-            if let Some((event_id, fingerprint)) = started {
+            if let Some((event_id, fingerprint)) = first {
                 app.chat_copy_session = Some(ChatCopySession {
                     target,
-                    anchor_index: start,
-                    selected_index: start,
+                    anchor_index: 0,
+                    selected_index: 0,
                     fingerprint,
                     event_id: event_id.clone(),
                     anchor_fingerprint: fingerprint,
                     anchor_event_id: event_id,
+                    range_fingerprints: vec![fingerprint],
+                });
+            } else {
+                app.chat_copy_feedback = Some(ChatCopyFeedback {
+                    target,
+                    text: "No messages to copy",
                 });
             }
             return true;
         }
     }
     false
-}
-
-fn viewport_start_index(app: &AppState, target: &ChatCopyTarget) -> usize {
-    let (line_starts, scroll_offset) = match target {
-        ChatCopyTarget::Dispute { .. } => (
-            app.admin_chat_line_starts.as_slice(),
-            app.admin_chat_scrollview_state.offset().y,
-        ),
-        ChatCopyTarget::Order { .. } => (
-            app.order_chat_line_starts.as_slice(),
-            app.order_chat_scrollview_state.offset().y,
-        ),
-        ChatCopyTarget::SolverDm { .. } => {
-            (app.solver_dm_line_starts.as_slice(), app.solver_dm_scroll)
-        }
-        ChatCopyTarget::Observer { .. } => (
-            app.observer_line_starts.as_slice(),
-            app.observer_scrollview_state.offset().y,
-        ),
-    };
-    first_visible_message_index(line_starts, scroll_offset)
 }
 
 #[cfg(test)]
@@ -1450,7 +1459,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn chat_copy_starts_at_first_visible_viewport_message() {
+    fn chat_copy_starts_at_first_message_even_when_scrolled() {
         use ratatui::layout::Position;
 
         let mut app = app_with_messages();
@@ -1458,35 +1467,58 @@ pub(crate) mod tests {
         app.admin_chat_scrollview_state
             .set_offset(Position::new(0, 12));
         enter_selection(&mut app);
-        assert_eq!(selected_index(&app), Some(1));
-        assert_eq!(selected_range(&app), Some(1..=1));
-        let expected = copy_text_for_message(CopyMessage {
-            event_id: None,
-            content: "last",
-            attachment: None,
-            timestamp: 1,
-            sender: 0,
-        })
-        .unwrap();
-        assert!(handle_key_with(
-            &mut app,
-            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            |text| {
-                assert_eq!(text, expected);
-                true
-            }
-        ));
+        assert_eq!(selected_index(&app), Some(0));
+        assert_eq!(selected_range(&app), Some(0..=0));
     }
 
     #[test]
-    fn first_visible_message_index_tracks_scroll_offset() {
-        assert_eq!(first_visible_message_index(&[], 0), 0);
-        assert_eq!(first_visible_message_index(&[0, 5, 10], 0), 0);
-        assert_eq!(first_visible_message_index(&[0, 5, 10], 4), 0);
-        assert_eq!(first_visible_message_index(&[0, 5, 10], 5), 1);
-        assert_eq!(first_visible_message_index(&[0, 5, 10], 9), 1);
-        assert_eq!(first_visible_message_index(&[0, 5, 10], 10), 2);
-        assert_eq!(first_visible_message_index(&[0, 5, 10], 99), 2);
+    fn chat_copy_cancels_when_interior_range_message_changes() {
+        let mut app = app_with_messages();
+        app.admin_dispute_chats
+            .get_mut("dispute")
+            .unwrap()
+            .push(message(ChatSender::Buyer, "middle"));
+        app.admin_dispute_chats
+            .get_mut("dispute")
+            .unwrap()
+            .push(message(ChatSender::Admin, "tail"));
+        // Buyer pane: first, middle, last(admin), middle(buyer), tail(admin)
+        // Visible for buyer: Buyer "first", Admin "last", Buyer "middle", Admin "tail"
+        enter_selection(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_range(&app), Some(0..=2));
+        // Replace interior display index 1 (Admin "last" = vec index 2).
+        app.admin_dispute_chats.get_mut("dispute").unwrap()[2].content = "replaced".into();
+        validate_selection(&mut app);
+        assert!(app.chat_copy_session.is_none());
+        assert!(app.chat_copy_cancelled);
+    }
+
+    #[test]
+    fn chat_copy_range_with_empty_filename_writes_nothing() {
+        let mut app = app_with_messages();
+        app.admin_dispute_chats.get_mut("dispute").unwrap()[2].attachment = Some(ChatAttachment {
+            blossom_url: "https://example.com/blob".into(),
+            filename: String::new(),
+            mime_type: None,
+            file_type: ChatAttachmentType::File,
+            decryption_key: None,
+        });
+        enter_selection(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_range(&app), Some(0..=1));
+        let mut copied = false;
+        assert!(handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            |_| {
+                copied = true;
+                true
+            }
+        ));
+        assert!(!copied);
+        assert_eq!(feedback_text(&app), Some("No filename to copy"));
     }
 
     #[test]

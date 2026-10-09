@@ -66,7 +66,7 @@ pub const HELP_DIP_PASTE_CHAT: &str =
 pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 pub const CHAT_COPY_START: &str = "Ctrl+C:Copy";
 pub const CHAT_COPY_HINT: &str = "↑↓:Extend Enter:Copy Esc:Cancel";
-pub const HELP_CHAT_COPY: &str = "Ctrl+C: Select visible messages to copy (also while typing)";
+pub const HELP_CHAT_COPY: &str = "Ctrl+C: Select messages to copy (also while typing)";
 pub const HELP_CHAT_COPY_KEYS: &str =
     "Copy mode: ↑↓ extend, Enter copies, Esc cancels; draft preserved";
 
