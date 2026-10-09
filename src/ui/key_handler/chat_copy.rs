@@ -1363,6 +1363,7 @@ pub(crate) mod tests {
             ..Default::default()
         });
         app.admin_chat_input = "draft\n  untouched".into();
+        app.admin_chat_draft_owner = Some(("dispute".into(), ChatParty::Buyer));
         app.admin_dispute_chats.insert(
             "dispute".into(),
             vec![

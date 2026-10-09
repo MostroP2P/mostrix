@@ -313,6 +313,7 @@ fn compact_observer_help(inner_width: u16, inner_height: u16) -> Vec<Line<'stati
 
     let full_lines: Vec<_> = [
         HELP_OBS_ENTER_LOAD,
+        HELP_OBS_CTRL_K_ACTIONS,
         HELP_CHAT_COPY,
         HELP_CHAT_COPY_KEYS,
         HELP_OBS_CTRL_L_CLEAR,
@@ -337,19 +338,22 @@ fn compact_observer_help(inner_width: u16, inner_height: u16) -> Vec<Line<'stati
     let (title_style, _) = settings_instruction_block_style();
     // Essentials first (fit on 20x8), then fill remaining height with feasible extras.
     let candidate_rows: &[&str] = if width < 36 {
+        // Keep each row short enough for ~20-col terminals (no mid-row wrap).
         &[
-            "Enter Ctrl+C ↑↓",
-            "Esc Ctrl+L Ctrl+S",
-            "↑↓ PgUp/PgDn: Scroll",
+            "Enter Ctrl+K",
+            "Ctrl+L Ctrl+C",
+            "Esc Ctrl+S",
+            "↑↓ PgUp/PgDn",
             HELP_OBS_PASTE_SHARED_KEY,
         ]
     } else {
         &[
             "Enter: Load Shared key",
+            "Ctrl+K: Actions",
             "Ctrl+C: Copy; Copy: ↑↓ Enter Esc",
             "Ctrl+L: Clear all",
             "Ctrl+S: Save attachment",
-            "Esc: Clear error",
+            "Esc: Dismiss error",
             "↑↓ PgUp/PgDn: Scroll",
             HELP_OBS_PASTE_SHARED_KEY,
         ]
@@ -651,6 +655,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DIP_SELECT_DISPUTE.to_string(),
                 HELP_DIP_SCROLL_CHAT.to_string(),
                 HELP_DIP_END_BOTTOM.to_string(),
+                HELP_DIP_CTRL_K_ACTIONS.to_string(),
                 HELP_DIP_SHIFT_F_RESOLVE.to_string(),
                 HELP_DIP_SHIFT_R_RECOVER.to_string(),
                 HELP_CTRL_T_TAKEOVER.to_string(),
@@ -680,13 +685,14 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
             HELP_TITLE_OBSERVER.to_string(),
             vec![
                 HELP_OBS_ENTER_LOAD.to_string(),
+                HELP_OBS_CTRL_K_ACTIONS.to_string(),
                 HELP_CHAT_COPY.to_string(),
                 HELP_CHAT_COPY_KEYS.to_string(),
                 HELP_OBS_PASTE_SHARED_KEY.to_string(),
                 HELP_OBS_SCROLL_LINE.to_string(),
                 HELP_OBS_SCROLL_PAGE.to_string(),
-                HELP_OBS_ESC_CLEAR_ERR.to_string(),
                 HELP_OBS_CTRL_L_CLEAR.to_string(),
+                HELP_OBS_ESC_CLEAR_ERR.to_string(),
                 HELP_OBS_CTRL_S_ATTACH.to_string(),
             ],
         ),
@@ -831,7 +837,13 @@ mod help_content_tests {
                 .draw(|frame| render_help_popup(frame, &app, Tab::Admin(AdminTab::Observer)))
                 .unwrap();
             let buffer = terminal.backend().buffer();
-            for expected in ["Ctrl+L", "Ctrl+S", "Ctrl+C", "Enter"] {
+            let essentials = if width <= 20 && height <= 8 {
+                // Tiny: two short rows fit Enter/Ctrl+K and Ctrl+L/Ctrl+C.
+                &["Enter", "Ctrl+K", "Ctrl+L", "Ctrl+C"][..]
+            } else {
+                &["Ctrl+L", "Ctrl+S", "Ctrl+C", "Enter"][..]
+            };
+            for expected in essentials {
                 assert!(
                     buffer_contains(buffer, expected),
                     "missing {expected} at {width}x{height}: {}",
@@ -856,13 +868,14 @@ mod help_content_tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert!(
-            buffer_contains(buffer, "Ctrl+C ↑↓") || buffer_contains(buffer, "Enter Ctrl+C ↑↓"),
-            "copy start/nav guidance missing at 20x8: {}",
+            buffer_contains(buffer, "Enter Ctrl+K") || buffer_contains(buffer, "Ctrl+K"),
+            "Actions guidance missing at 20x8: {}",
             buffer_text(buffer)
         );
         assert!(
-            buffer_contains(buffer, "Esc Ctrl+L") || buffer_contains(buffer, "Esc Ctrl+L Ctrl+S"),
-            "copy-cancel plus clear/save guidance missing at 20x8: {}",
+            buffer_contains(buffer, "Ctrl+L Ctrl+C")
+                || (buffer_contains(buffer, "Ctrl+L") && buffer_contains(buffer, "Ctrl+C")),
+            "clear/copy guidance missing at 20x8: {}",
             buffer_text(buffer)
         );
     }

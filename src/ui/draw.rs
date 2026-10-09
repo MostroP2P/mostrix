@@ -302,6 +302,16 @@ pub fn ui_draw(
         trade_actions_popup::render_trade_actions_popup(f, *selected_index);
     }
 
+    // Disputes in Progress Ctrl+K action list
+    if let UiMode::DisputeActionsPopup { selected_index, .. } = &app.mode {
+        dispute_actions_popup::render_dispute_actions_popup(f, *selected_index);
+    }
+
+    // Observer Ctrl+K action list
+    if let UiMode::ObserverActionsPopup { selected_index, .. } = &app.mode {
+        observer_actions_popup::render_observer_actions_popup(f, *selected_index);
+    }
+
     // Save attachment popup (Ctrl+S in dispute chat)
     if let UiMode::SaveAttachmentPopup(selected_idx) = &app.mode {
         save_attachment_popup::render_save_attachment_popup(f, app, *selected_idx);
@@ -392,6 +402,26 @@ pub fn ui_draw(
             "",
             *selected_button,
             Some(&message),
+        );
+    }
+    if let UiMode::LinkWatchdogKey(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "📩 Link Watchdog",
+            "Enter the watchdog key the Telegram bot sent on /link:",
+            "npub1...",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::LinkWatchdogCode(_, key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "📩 Link Watchdog",
+            "Enter the code the Telegram bot sent on /link:",
+            "K7QM-2XPA",
+            key_state,
+            false,
         );
     }
     if let UiMode::AddBlossomServer(key_state) = &app.mode {

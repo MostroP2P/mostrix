@@ -344,6 +344,7 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
     // Handle paste for the Observer Shared key field
     if app.observer_inputs_editable() {
         app.observer_shared_key_input.push_str(&filtered_text);
+        app.invalidate_observer_transcript_if_key_diverged();
     }
 
     // Disputes in Progress chatbox (admin) — keeps newlines for multi-line drafts
@@ -1136,8 +1137,12 @@ async fn main() -> Result<(), anyhow::Error> {
                     displayed_before.as_deref(),
                     &closed,
                 );
+                let admin_keys = admin_chat_keys_clone_for_role(&app);
                 for dispute_id in closed {
                     untrack_dispute_chat_parties(&dispute_id);
+                    if let Some(admin_keys) = admin_keys.as_ref() {
+                        crate::util::watchdog::spawn_unwatch(&client, admin_keys, &dispute_id);
+                    }
                     // Kind-38386 fallback when the Mostro→solver DM was missed.
                     crate::util::admin_protocol_dms::notify_admin_if_users_closed_dispute(
                         &mut app,

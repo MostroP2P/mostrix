@@ -75,6 +75,15 @@ pub fn save_mostro_pubkey_to_settings(key_string: &str) -> Result<(), String> {
     )
 }
 
+/// Save the linked mostro-watchdog key; `Ok(())` only after a successful disk write.
+pub fn save_watchdog_pubkey_to_settings(npub: &str) -> Result<(), String> {
+    try_save_settings_with(
+        |s| s.watchdog_pubkey = npub.to_string(),
+        "Failed to save the watchdog key to settings",
+        "Watchdog key saved to settings file",
+    )
+}
+
 /// Validate Lightning address shape (`user@domain.com`) before opening the confirm dialog.
 /// Saving runs an async LNURL metadata check (`tag: payRequest`) before writing disk.
 pub fn validate_ln_address_format(addr: &str) -> Result<(), String> {

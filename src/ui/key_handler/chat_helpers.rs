@@ -188,6 +188,82 @@ pub fn live_order_chat_draft_target(app: &AppState) -> Option<(Uuid, UserChatCha
     resolve_selected_mytrades_order_id(app).map(|id| (id, app.active_user_chat_channel))
 }
 
+/// Live `(dispute_id, party)` for the admin dispute composer.
+///
+/// Uses the **displayed** filtered row ([`selected_filtered_dispute`]), including
+/// the first-row fallback when `selected_dispute_id` is unset or hidden. `None`
+/// on SERBERO (read-only), when the filtered list is empty, or outside Managing.
+///
+/// Callers on the Enter path must restore `ManagingDispute` first: `handle_enter_key`
+/// temporarily replaces `app.mode` with `Normal` before dispatching.
+#[must_use]
+pub fn live_admin_chat_draft_target(app: &AppState) -> Option<(String, ChatParty)> {
+    if app.admin_show_solver_dms {
+        return None;
+    }
+    if !matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
+        return None;
+    }
+    // Prefer the filtered highlight so a missing/stale stored id cannot bind the draft.
+    let selected = crate::ui::helpers::selected_filtered_dispute(app)?;
+    Some((selected.dispute_id, app.active_chat_party))
+}
+
+/// Clear the admin dispute composer draft and its ownership.
+pub fn clear_admin_chat_draft(app: &mut AppState) {
+    app.admin_chat_input.clear();
+    app.admin_chat_draft_owner = None;
+}
+
+/// Drop the admin draft when it is not owned by the live dispute/party.
+pub fn sync_admin_chat_draft_to_live_target(app: &mut AppState) {
+    if app.admin_chat_input.is_empty() {
+        app.admin_chat_draft_owner = None;
+        return;
+    }
+    let Some(live) = live_admin_chat_draft_target(app) else {
+        clear_admin_chat_draft(app);
+        return;
+    };
+    if app.admin_chat_draft_owner != Some(live) {
+        clear_admin_chat_draft(app);
+    }
+}
+
+/// Resolve Enter-to-send target and validate draft ownership in one step.
+pub fn resolve_admin_chat_send_target(app: &mut AppState) -> Option<(String, ChatParty)> {
+    if app.admin_chat_input.is_empty() {
+        app.admin_chat_draft_owner = None;
+        return None;
+    }
+    let Some(live) = live_admin_chat_draft_target(app) else {
+        clear_admin_chat_draft(app);
+        return None;
+    };
+    if app.admin_chat_draft_owner != Some(live.clone()) {
+        clear_admin_chat_draft(app);
+        return None;
+    }
+    Some(live)
+}
+
+/// Prepare the admin composer for typing/paste. Returns `false` when SERBERO
+/// or there is no live dispute party target.
+///
+/// When binding a fresh draft, also pins `selected_dispute_id` to the displayed
+/// row so sidebar highlight and ownership stay aligned after a filter clear.
+pub fn prepare_admin_chat_edit(app: &mut AppState) -> bool {
+    sync_admin_chat_draft_to_live_target(app);
+    let Some(live) = live_admin_chat_draft_target(app) else {
+        return false;
+    };
+    if app.admin_chat_input.is_empty() {
+        app.selected_dispute_id = Some(live.0.clone());
+        app.admin_chat_draft_owner = Some(live);
+    }
+    true
+}
+
 /// Clear the My Trades composer draft and its ownership.
 ///
 /// Esc keeps draft + owner while staying on the same order/channel; Up/Down,
@@ -640,5 +716,149 @@ mod draft_and_pin_tests {
         assert_eq!(target, None, "must not resolve/send A's draft to B");
         assert!(app.order_chat_input.is_empty());
         assert!(app.order_chat_draft_owner.is_none());
+    }
+
+    fn admin_dispute(id: &str) -> crate::models::AdminDispute {
+        crate::models::AdminDispute {
+            dispute_id: id.to_string(),
+            status: Some("in-progress".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn admin_draft_clears_when_party_or_dispute_changes() {
+        use crate::ui::{AdminMode, AdminTab, ChatParty, DisputeFilter};
+
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.dispute_filter = DisputeFilter::InProgress;
+        app.admin_disputes_in_progress = vec![admin_dispute("d-a"), admin_dispute("d-b")];
+        app.selected_dispute_id = Some("d-a".into());
+        app.active_chat_party = ChatParty::Buyer;
+        app.admin_chat_input_enabled = true;
+        assert!(prepare_admin_chat_edit(&mut app));
+        app.admin_chat_input = "for buyer A".into();
+        assert_eq!(
+            app.admin_chat_draft_owner,
+            Some(("d-a".into(), ChatParty::Buyer))
+        );
+
+        // Switching party must drop the draft (same as My Trades Tab).
+        app.active_chat_party = ChatParty::Seller;
+        sync_admin_chat_draft_to_live_target(&mut app);
+        assert!(app.admin_chat_input.is_empty());
+        assert!(app.admin_chat_draft_owner.is_none());
+
+        assert!(prepare_admin_chat_edit(&mut app));
+        app.admin_chat_input = "for seller A".into();
+        // Sidebar move to another dispute.
+        crate::ui::helpers::move_dispute_selection(&mut app, 1);
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("d-b"));
+        assert!(app.admin_chat_input.is_empty());
+        assert!(app.admin_chat_draft_owner.is_none());
+    }
+
+    #[test]
+    fn admin_send_refuses_unowned_draft() {
+        use crate::ui::{AdminMode, AdminTab, ChatParty, DisputeFilter};
+
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.dispute_filter = DisputeFilter::InProgress;
+        app.admin_disputes_in_progress = vec![admin_dispute("d-a")];
+        app.selected_dispute_id = Some("d-a".into());
+        app.active_chat_party = ChatParty::Buyer;
+        app.admin_chat_input = "stale".into();
+        app.admin_chat_draft_owner = Some(("d-other".into(), ChatParty::Buyer));
+
+        assert!(resolve_admin_chat_send_target(&mut app).is_none());
+        assert!(app.admin_chat_input.is_empty());
+    }
+
+    #[test]
+    fn serbero_has_no_admin_draft_target() {
+        use crate::ui::{AdminMode, AdminTab, ChatParty};
+
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.selected_dispute_id = Some("d-a".into());
+        app.active_chat_party = ChatParty::Buyer;
+        app.admin_show_solver_dms = true;
+        assert!(live_admin_chat_draft_target(&app).is_none());
+        assert!(!prepare_admin_chat_edit(&mut app));
+    }
+
+    #[test]
+    fn unset_selected_dispute_id_still_binds_displayed_first_row() {
+        use crate::ui::{AdminMode, AdminTab, ChatParty, DisputeFilter};
+
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.dispute_filter = DisputeFilter::InProgress;
+        app.admin_disputes_in_progress = vec![admin_dispute("d-first"), admin_dispute("d-second")];
+        app.selected_dispute_id = None;
+        app.active_chat_party = ChatParty::Buyer;
+
+        assert!(prepare_admin_chat_edit(&mut app));
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("d-first"));
+        assert_eq!(
+            app.admin_chat_draft_owner,
+            Some(("d-first".into(), ChatParty::Buyer))
+        );
+    }
+
+    /// Production Enter routing: `handle_enter_key` swaps mode to Normal before the
+    /// ManagingDispute arm. Ownership resolve must run after restoring Managing, or
+    /// every Buyer/Seller send clears the draft and never persists.
+    #[test]
+    fn enter_send_survives_mode_replace_for_buyer_and_seller() {
+        use crate::ui::{AdminMode, AdminTab, ChatParty, DisputeFilter};
+
+        for party in [ChatParty::Buyer, ChatParty::Seller] {
+            let mut app = AppState::new(UserRole::Admin);
+            app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            app.dispute_filter = DisputeFilter::InProgress;
+            app.admin_disputes_in_progress = vec![admin_dispute("d-send")];
+            app.selected_dispute_id = Some("d-send".into());
+            app.active_chat_party = party;
+            app.admin_chat_input_enabled = true;
+            assert!(prepare_admin_chat_edit(&mut app));
+            let draft = if party == ChatParty::Buyer {
+                "hello buyer"
+            } else {
+                "hello seller"
+            };
+            app.admin_chat_input = draft.into();
+            assert_eq!(app.admin_chat_draft_owner, Some(("d-send".into(), party)));
+
+            // Mirror handle_enter_key's mem::replace before matching Managing.
+            let current = std::mem::replace(&mut app.mode, UiMode::AdminMode(AdminMode::Normal));
+            assert!(matches!(
+                current,
+                UiMode::AdminMode(AdminMode::ManagingDispute)
+            ));
+
+            // Without restore, ownership resolve would clear the draft (the bug).
+            assert!(
+                live_admin_chat_draft_target(&app).is_none(),
+                "mode is still Normal before restore"
+            );
+
+            // Fixed Managing arm: restore before resolve.
+            app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+            let owned = resolve_admin_chat_send_target(&mut app);
+            assert_eq!(
+                owned,
+                Some(("d-send".into(), party)),
+                "Enter must keep the draft for {party:?}"
+            );
+            assert_eq!(app.admin_chat_input, draft);
+        }
     }
 }

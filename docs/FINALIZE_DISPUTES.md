@@ -26,13 +26,13 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
 3. **Review Details**: View dispute information in the header (parties, amounts, ratings, privacy)
 4. **Chat with Parties**:
    - Use Tab to switch between buyer and seller chat views
-   - Press Shift+I to enable/disable chat input (prevents accidental typing)
-   - Type messages directly in the input box (when input enabled)
-   - Press Enter to send messages
+   - Press **i** to enter INSERT on BUYER/SELLER (type freely); **Esc** returns to COMMAND. SERBERO is read-only
+   - Press **Ctrl+K** for Resolve / Recover / Filter / Remove (letter selects, Enter confirms; dispute id pinned)
+   - Type messages in the input box when INSERT; Enter sends only if the draft still belongs to the live dispute/party
    - Use PageUp/PageDown to scroll through chat history
    - Press End to jump to bottom of chat (latest messages)
    - Visual scrollbar on the right shows position in chat history
-5. **Open Finalization**: Press Shift+F to open finalization popup
+5. **Open Finalization**: Press Shift+F (COMMAND) or Ctrl+K → F to open finalization popup
 6. **Review Full Details**: Popup shows complete dispute information
 7. **Choose actions on one popup** (Left/Right): **💰 Pay buyer** (`AdminSettle`), **↩️ Refund seller** (`AdminCancel`), and **Bond** when the instance advertises `bond_enabled: true` on kind **38385** (otherwise a two-button layout only). Button **titles** use the outcome labels; the **body** shows protocol names **`Admin settle`** / **`Admin cancel`** (and `bond.label()` on Bond). **Esc** closes the popup (no separate Exit button).
 8. **Bond slash submenu** (optional): With **Bond** focused, **Enter** opens overlay **⚔️ Bond resolution**; ↑/↓ among four labeled choices; **Enter** applies; **Esc** closes submenu only.
@@ -132,13 +132,14 @@ Finalized disputes: pay/refund buttons are dimmed (inner body `—`); use **Esc*
 
 - Up/Down: Select dispute in sidebar
 - Tab: Switch between buyer/seller chat party
-- Shift+I: Toggle chat input enabled/disabled
-- Type: Start typing message in input box (when input enabled)
-- Enter: Send message
-- Shift+F: Open finalization popup
+- i / Esc: INSERT typing / COMMAND shortcuts (not on SERBERO)
+- Ctrl+K: Dispute actions (Resolve / Recover / Filter / Remove); letter selects, Enter confirms
+- Type: Start typing message in input box (when INSERT); draft bound to dispute+party
+- Enter: Send message (INSERT; ownership-checked)
+- Shift+F: Open finalization popup (COMMAND)
 - PageUp/PageDown: Scroll through chat history
 - End: Jump to bottom of chat (latest messages)
-- Backspace: Delete characters from input (when input enabled)
+- Backspace: Delete characters from input (when INSERT)
 
 **In Finalization Popup**:
 
@@ -319,36 +320,34 @@ The chat interface provides real-time communication with dispute parties:
 
 **Input Handling**:
 
-- **Input toggle**: Press Shift+I to enable/disable chat input
-  - When disabled, prevents accidental typing while navigating
-  - Visual indicator in input title shows enabled/disabled state
-  - Input is enabled by default when entering dispute management
+- **INSERT / COMMAND**: Press **i** (or Insert) on BUYER/SELLER to enter INSERT; **Esc** returns to COMMAND (draft kept for same dispute/party)
+  - INSERT: type freely (capitals OK); Enter sends only if ownership matches
+  - COMMAND: Shift chords and Delete work without colliding with typing
+  - SERBERO: read-only command bar (no Write/Send)
+  - Titles show `Message / INSERT` or `Message / COMMAND`
+- **Ctrl+K Actions**: Resolve / Recover / Filter / Remove (pinned dispute id; letter selects, Enter confirms)
 - **Text wrapping**: Input wraps at word boundaries, respects available width
 - **Character limit**: Grows up to 10 lines, with visual feedback
-- **Send behavior**: Enter sends message, Shift+F opens finalization popup
-- **Clear on send**: Input automatically clears after sending
+- **Send behavior**: Enter sends message (INSERT) only when `admin_chat_draft_owner` matches the live dispute/party; Shift+F or Ctrl+K → F opens finalization
+- **Clear on send**: Input and draft owner clear after sending
 
 ### Chat Footer
 
-The footer shows context-sensitive shortcuts:
+The footer is a **one-row keycap command bar** (aligned with My Trades). Groups that do not fit are **skipped** so later shortcuts can still appear; on very narrow widths Help/Actions stay discoverable:
 
-**When typing (input enabled)**:
-
-```text
-Tab: Switch Party | Enter: Send | Shift+I: Disable | Shift+F: Finalize | PgUp/PgDn: Scroll | End: Bottom | ↑↓: Select Dispute
-```
-
-**When typing (input disabled)**:
+**COMMAND** (BUYER/SELLER example):
 
 ```text
-Tab: Switch Party | Shift+I: Enable | Shift+F: Finalize | PgUp/PgDn: Scroll | ↑↓: Navigate Chat | End: Bottom | ↑↓: Select Dispute
+i Write · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy
 ```
 
-**When not typing**:
+**INSERT** (example):
 
 ```text
-Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scroll Chat | End: Bottom
+Enter Send · Esc Commands · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy
 ```
+
+**SERBERO** omits Write/Send (read-only). Party, filter, and file hints (`Ctrl+S Save file` when attachments exist) sit on the **chat border** (`title_bottom`), not in the keycap row.
 
 ## Best Practices
 
@@ -360,12 +359,14 @@ Tab: Switch Party | Shift+F: Finalize | ↑↓: Select Dispute | PgUp/PgDn: Scro
 6. **Check privacy**: Privacy labels ("Yes" = private mode / "No" = public mode) indicate whether user info may be limited
 7. **Switch parties**: Use Tab to alternate between buyer and seller chats
 8. **Scroll history**: Use PageUp/PageDown to review full conversation history, or End to jump to latest
-9. **Toggle input**: Use Shift+I to disable input when navigating to prevent accidental typing
+9. **Use COMMAND for shortcuts**: Press Esc to leave INSERT before Shift+F / Shift+R / Delete (or use Ctrl+K Actions)
 10. **Monitor scrollbar**: Visual scrollbar on the right shows your position in the chat history
 
 ## Related Files
 
 - `src/util/order_utils/bond_resolution.rs` - `BondSlashChoice`, wire mapping, `finalize_success_message`
+- `src/ui/dispute_actions_popup.rs` - Ctrl+K dispute actions (pinned dispute id; letter selects, Enter confirms; Resolve opens finalize flow)
+- `src/ui/key_handler/chat_helpers.rs` - Admin draft ownership helpers
 - `src/ui/dispute_finalization_popup.rs` - Finalize popup (titles + inner `Admin settle` / `Admin cancel` / bond label)
 - `src/ui/operation_result.rs` - Success/error popups (word wrap, dynamic height for `Info`)
 - `src/ui/key_handler/admin_handlers.rs` - `execute_finalize_dispute_action`, waiting mode, result channel

@@ -358,6 +358,8 @@ fn handle_up_key(
         | UiMode::AddRelay(_)
         | UiMode::ConfirmRelay(_, _)
         | UiMode::AddBlossomServer(_)
+        | UiMode::LinkWatchdogKey(_)
+        | UiMode::LinkWatchdogCode(..)
         | UiMode::ConfirmBlossomServer(_, _)
         | UiMode::AddLnAddress(_)
         | UiMode::ConfirmLnAddress(_, _)
@@ -379,6 +381,8 @@ fn handle_up_key(
         | UiMode::ConfirmTradeIndexSync(_, _)
         | UiMode::BackupNewKeys { .. }
         | UiMode::TradeActionsPopup { .. }
+        | UiMode::DisputeActionsPopup { .. }
+        | UiMode::ObserverActionsPopup { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -544,6 +548,8 @@ fn handle_down_key(
         | UiMode::AddRelay(_)
         | UiMode::ConfirmRelay(_, _)
         | UiMode::AddBlossomServer(_)
+        | UiMode::LinkWatchdogKey(_)
+        | UiMode::LinkWatchdogCode(..)
         | UiMode::ConfirmBlossomServer(_, _)
         | UiMode::AddLnAddress(_)
         | UiMode::ConfirmLnAddress(_, _)
@@ -565,6 +571,8 @@ fn handle_down_key(
         | UiMode::ConfirmTradeIndexSync(_, _)
         | UiMode::BackupNewKeys { .. }
         | UiMode::TradeActionsPopup { .. }
+        | UiMode::DisputeActionsPopup { .. }
+        | UiMode::ObserverActionsPopup { .. }
         | UiMode::ConfirmExit(_) => {
             // No navigation in these modes
         }
@@ -664,12 +672,20 @@ fn switch_dispute_pane(app: &mut AppState, forward: bool) {
         app.admin_show_solver_dms,
         forward,
     );
+    let party_changed = party != app.active_chat_party || serbero != app.admin_show_solver_dms;
     app.active_chat_party = party;
     app.admin_show_solver_dms = serbero;
     app.solver_dm_scroll = 0;
     // Reset scroll/selection when switching parties (will be set in render)
     app.admin_chat_selected_message_idx = None;
     app.admin_chat_scroll_tracker = None;
+    // Draft belonged to the previous party (or SERBERO is read-only): drop it.
+    if party_changed {
+        crate::ui::key_handler::chat_helpers::clear_admin_chat_draft(app);
+        if serbero {
+            app.admin_chat_input_enabled = false;
+        }
+    }
 }
 
 /// Handle Tab and BackTab keys
