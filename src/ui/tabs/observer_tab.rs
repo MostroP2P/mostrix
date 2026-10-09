@@ -1,18 +1,87 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
-use crate::ui::constants::{CHAT_COPY_HINT, CHAT_COPY_START};
 use crate::ui::helpers::build_observer_scrollview_content;
 use crate::ui::key_handler::chat_copy;
 use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
-/// Below this width the full field labels and footer (the longer footer line
-/// needs ~104 columns) no longer fit; fall back to the abbreviated compact
-/// labels/footer instead of silently clipping keyboard shortcuts.
+/// Below this width full field labels no longer fit; use abbreviated titles.
 const OBSERVER_NARROW_WIDTH: u16 = 60;
+
+/// High-contrast keycap groups that drop whole pairs when width is tight.
+fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for (key, label) in hints {
+        let gap = if spans.is_empty() { 0 } else { 2 };
+        let key_text = format!(" {key} ");
+        let label_text = format!(" {label}");
+        let group_width = Span::raw(&key_text).width() + Span::raw(&label_text).width();
+        if used + gap + group_width > usize::from(width) {
+            break;
+        }
+        let key_style = if spans.is_empty() {
+            Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
+        } else {
+            Style::default().fg(Color::White).bg(Color::DarkGray)
+        };
+        if gap > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            key_text,
+            key_style.add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(label_text, Style::default().fg(Color::Gray)));
+        used += gap + group_width;
+    }
+    Line::from(spans)
+}
+
+fn observer_command_bar(width: u16) -> Line<'static> {
+    // Help/Copy before Clear-all so narrow terminals keep the same primary
+    // discoverability as My Trades / Disputes.
+    shortcut_bar(
+        width,
+        &[
+            ("Enter", "Load"),
+            ("Ctrl+H", "Help"),
+            ("Ctrl+C", "Copy"),
+            ("Esc", "Clear"),
+            ("Ctrl+L", "All"),
+        ],
+    )
+}
+
+fn observer_copy_controls(width: u16) -> Text<'static> {
+    let hints = [
+        ("↑↓", "Select"),
+        ("Enter", "Copy"),
+        ("Esc", "Cancel"),
+        ("Ctrl+L", "Clear"),
+    ];
+    let full = shortcut_bar(u16::MAX, &hints);
+    if full.width() <= usize::from(width) {
+        Text::from(full)
+    } else {
+        Text::from(
+            hints
+                .iter()
+                .map(|&(key, label)| {
+                    let line = shortcut_bar(width, &[(key, label)]);
+                    if line.spans.is_empty() {
+                        shortcut_bar(width, &[(key, "")])
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+}
 
 pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     chat_copy::validate_selection(app);
@@ -20,23 +89,20 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     let selection_range = chat_copy::selected_range(app);
     let feedback = chat_copy::feedback_text(app);
     let copy_context = selection.is_some() || feedback.is_some();
-    let copy_hint = if area.width < 34 {
-        "↑↓ Select\nEnter Copy Esc Cancel\nCtrl+L Clear".to_string()
+    let copy_controls = if let Some(text) = feedback {
+        Text::styled(text, Style::default().fg(PRIMARY_COLOR))
     } else {
-        format!("{CHAT_COPY_HINT}\nCtrl+L:Clear all")
+        observer_copy_controls(area.width)
     };
     let compact = area.height < 16 || area.width < OBSERVER_NARROW_WIDTH;
-    // Compact footer is 3 short lines (vs. 2 long ones) so shortcuts stay
-    // readable instead of being cut off; field row stays 3 rows either way.
+    // One keycap command row; copy mode may wrap Select/Copy/Cancel/Clear.
     let footer_height = if copy_context {
-        Paragraph::new(feedback.unwrap_or(&copy_hint))
+        Paragraph::new(copy_controls.clone())
             .wrap(Wrap { trim: true })
             .line_count(area.width.max(1))
-            .min(3) as u16
-    } else if compact {
-        3
+            .min(4) as u16
     } else {
-        2
+        1
     };
     let field_height = if copy_context && area.height < footer_height + 7 {
         0
@@ -130,17 +196,30 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
     f.render_widget(header, chunks[0]);
 
     // Chat view (reuses the same formatting as dispute chat) with scrollview.
+    let chat_area = chunks[1];
+    let has_attachment = app.observer_messages.iter().any(|m| m.attachment.is_some());
+    let mut chat_hints = Vec::new();
+    if has_attachment {
+        chat_hints.push(("Ctrl+S", "Save file"));
+    }
+    chat_hints.push(("Ctrl+V", "Paste"));
+    chat_hints.push(("PgUp/PgDn", "Scroll"));
+    let chat_border_hints = if copy_context {
+        Line::default()
+    } else {
+        shortcut_bar(chat_area.width.saturating_sub(2), &chat_hints)
+    };
     let chat_block = Block::default()
         .title(if selection.is_some() {
             "Copy: Observer"
         } else {
             "Chat messages"
         })
+        .title_bottom(chat_border_hints)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
         .style(Style::default().bg(BACKGROUND_COLOR));
-    let chat_area = chunks[1];
     let inner_area = chat_block.inner(chat_area);
     f.render_widget(chat_block, chat_area);
 
@@ -241,33 +320,18 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
 
     if copy_context {
         f.render_widget(
-            Paragraph::new(feedback.unwrap_or(&copy_hint))
-                .style(Style::default().fg(PRIMARY_COLOR))
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(copy_controls).wrap(Wrap { trim: true }),
             input_chunks[1],
         );
         return;
     }
 
-    let footer_text = if compact {
-        // Shortened so shortcuts stay visible instead of clipping on narrow terminals.
-        "Ctrl+H:Help Ctrl+C:Copy Paste\n\
-Enter:Load  Esc:Clear  Ctrl+L:All\n\
-Ctrl+S:Save  \u{2191}\u{2193}/PgUp/PgDn:Scroll"
-            .to_string()
-    } else {
-        let paste_hint = if cfg!(windows) {
-            "Shift+Insert / Ctrl+V / Ctrl+Shift+V / right-click"
-        } else {
-            "Ctrl+V / Ctrl+Shift+V / middle-click"
-        };
-        format!(
-            "{CHAT_COPY_START} | Ctrl+H: Help | Paste ({paste_hint})\n\
-Enter: Load chat | Esc: Clear error | Ctrl+L: Clear all | Ctrl+S: Save attachment | ↑↓/PgUp/PgDn: Scroll"
-        )
-    };
-    let footer = Paragraph::new(footer_text);
-    f.render_widget(footer, input_chunks[1]);
+    if footer_height > 0 {
+        f.render_widget(
+            Paragraph::new(observer_command_bar(input_chunks[1].width)),
+            input_chunks[1],
+        );
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +407,50 @@ mod tests {
                 .collect::<String>()
                 .contains(text)
         })
+    }
+
+    #[test]
+    fn shortcut_bar_keeps_complete_groups_within_display_width() {
+        let hints = [("Enter", "Load"), ("Ctrl+L", "All"), ("Ctrl+H", "Help")];
+        for width in 0..120 {
+            let line = super::shortcut_bar(width, &hints);
+            assert!(line.width() <= usize::from(width));
+            let text = line.to_string();
+            assert_eq!(text.contains("Ctrl+L"), text.contains("All"));
+            assert_eq!(text.contains("Ctrl+H"), text.contains("Help"));
+        }
+        assert_eq!(super::shortcut_bar(12, &hints).to_string(), " Enter  Load");
+        assert!(super::shortcut_bar(11, &hints).spans.is_empty());
+        let line = super::shortcut_bar(80, &hints);
+        assert_eq!(line.spans[0].style.bg, Some(PRIMARY_COLOR));
+        assert_eq!(
+            line.spans[3].style.bg,
+            Some(ratatui::style::Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn command_bar_and_copy_controls_fit_narrow_widths() {
+        for width in 0..120 {
+            let line = super::observer_command_bar(width);
+            assert!(line.width() <= usize::from(width));
+            let text = line.to_string();
+            if width >= 28 {
+                assert!(text.contains("Load"));
+                assert!(text.contains("Clear") || text.contains("Help"));
+            }
+            let controls = super::observer_copy_controls(width);
+            assert!(controls
+                .lines
+                .iter()
+                .all(|line| line.width() <= usize::from(width)));
+            if width >= 14 {
+                let text = controls.to_string();
+                for label in ["Select", "Copy", "Cancel"] {
+                    assert!(text.contains(label), "missing {label} at width {width}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -459,34 +567,62 @@ mod tests {
     }
 
     #[test]
-    fn observer_clear_shortcut_is_visible_in_full_and_compact_layouts() {
-        for (width, height, shortcut) in [
-            (120, 24, "Ctrl+L: Clear all"),
-            (40, 24, "Ctrl+L:All"),
-            (80, 12, "Ctrl+L:All"),
-            (40, 12, "Ctrl+L:All"),
-        ] {
+    fn observer_command_bar_shows_primary_actions_on_one_row() {
+        for (width, height) in [(120, 24), (80, 24), (80, 12), (40, 24), (40, 12)] {
             let buf = render_observer(&mut AppState::new(UserRole::Admin), width, height);
+            for label in ["Load", "Help"] {
+                assert!(
+                    buffer_contains(&buf, label),
+                    "missing {label} at {width}x{height}"
+                );
+            }
+            // Load+Help ≈ 27 cols; Copy needs ≈ 42; Clear/All need ≈ 60+.
+            if width >= 50 {
+                assert!(
+                    buffer_contains(&buf, "Copy"),
+                    "missing Copy at {width}x{height}"
+                );
+            }
+            if width >= 70 {
+                for label in ["Clear", "All"] {
+                    assert!(
+                        buffer_contains(&buf, label),
+                        "missing {label} at {width}x{height}"
+                    );
+                }
+            }
             assert!(
-                buffer_contains(&buf, shortcut),
-                "missing hint at {width}x{height}"
+                !buffer_contains(&buf, "Ctrl+L: Clear all") && !buffer_contains(&buf, "Ctrl+L:All"),
+                "stale colon-style clear hint at {width}x{height}"
             );
             assert!(
-                buffer_contains(&buf, "Ctrl+C:Copy"),
-                "missing copy hint at {width}x{height}"
-            );
-            assert!(
-                !buffer_contains(&buf, "Ctrl+C: Clear all") && !buffer_contains(&buf, "Ctrl+C:All"),
-                "stale clear hint at {width}x{height}"
+                !buffer_contains(&buf, "Ctrl+C:Copy") && !buffer_contains(&buf, "Ctrl+C: Copy"),
+                "stale colon-style copy hint at {width}x{height}"
             );
         }
     }
 
-    /// A narrow-but-tall terminal (plenty of height, insufficient width) should still
-    /// switch to the compact layout: abbreviated field labels and a shortened footer
-    /// so keyboard shortcuts stay fully on-screen instead of being clipped.
     #[test]
-    fn observer_tab_narrow_width_uses_abbreviated_labels_and_footer() {
+    fn observer_paste_and_scroll_hints_stay_on_the_chat_border() {
+        let buf = render_observer(&mut AppState::new(UserRole::Admin), 120, 24);
+        assert!(
+            buffer_contains(&buf, "Paste"),
+            "Paste hint must stay on the chat border"
+        );
+        assert!(
+            buffer_contains(&buf, "Scroll"),
+            "Scroll hint must stay on the chat border"
+        );
+        assert!(
+            buffer_contains(&buf, "Load"),
+            "primary command bar must remain visible"
+        );
+    }
+
+    /// A narrow-but-tall terminal should still use abbreviated field labels;
+    /// the keycap command bar width-truncates whole groups instead of clipping.
+    #[test]
+    fn observer_tab_narrow_width_uses_abbreviated_labels_and_keycap_bar() {
         let buf = render_observer(&mut AppState::new(UserRole::Admin), 40, 24);
 
         assert!(
@@ -497,25 +633,20 @@ mod tests {
             !buffer_contains(&buf, "Shared key (64-char hex, read-only grant)"),
             "narrow layout should not use the full-width Shared key label"
         );
-        // The long-form footer's second line never fits even at 80 columns, so its
-        // presence here would indicate clipped text rather than a rendered shortcut.
         assert!(
             !buffer_contains(&buf, "Ctrl+S: Save attachment"),
-            "narrow layout should not attempt to render the full-width footer"
+            "narrow layout should not attempt to render the old full-width footer"
         );
 
-        for shortcut in [
-            "Ctrl+H:Help",
-            "Enter:Load",
-            "Esc:Clear",
-            "Ctrl+L:All",
-            "Ctrl+S:Save",
-            "Scroll",
-        ] {
+        for label in ["Load", "Help"] {
             assert!(
-                buffer_contains(&buf, shortcut),
-                "narrow footer is missing shortcut: {shortcut}"
+                buffer_contains(&buf, label),
+                "narrow command bar is missing label: {label}"
             );
         }
+        assert!(
+            buffer_contains(&buf, "Paste") || buffer_contains(&buf, "Scroll"),
+            "narrow chat border should keep at least one contextual hint"
+        );
     }
 }

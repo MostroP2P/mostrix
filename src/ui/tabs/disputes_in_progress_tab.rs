@@ -5,13 +5,13 @@ use std::str::FromStr;
 use mostro_core::prelude::DisputeStatus;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph,
+    Block, BorderType, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap,
 };
 use tui_scrollview::{ScrollView, ScrollbarVisibility};
 
-use crate::ui::constants::*;
+use crate::ui::constants::SOLVER_DMS_READ_ONLY;
 use crate::ui::helpers::{
     build_chat_scrollview_content, count_visible_attachments, dispute_status_color,
     format_local_timestamp, format_user_rating, get_filtered_disputes, get_selected_chat_message,
@@ -60,6 +60,110 @@ fn truncate_dispute_id_label(display_id: &str, max_chars: usize) -> String {
     }
 }
 
+/// High-contrast keycap groups that drop whole pairs when width is tight.
+fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for (key, label) in hints {
+        let gap = if spans.is_empty() { 0 } else { 2 };
+        let key_text = format!(" {key} ");
+        let label_text = format!(" {label}");
+        let group_width = Span::raw(&key_text).width() + Span::raw(&label_text).width();
+        if used + gap + group_width > usize::from(width) {
+            break;
+        }
+        let key_style = if spans.is_empty() {
+            Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
+        } else {
+            Style::default().fg(Color::White).bg(Color::DarkGray)
+        };
+        if gap > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            key_text,
+            key_style.add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(label_text, Style::default().fg(Color::Gray)));
+        used += gap + group_width;
+    }
+    Line::from(spans)
+}
+
+fn dispute_command_bar(
+    width: u16,
+    input_enabled: bool,
+    is_finalized: bool,
+    managing: bool,
+) -> Line<'static> {
+    if is_finalized {
+        return shortcut_bar(
+            width,
+            &[
+                ("Ctrl+H", "Help"),
+                ("Shift+C", "Filter"),
+                ("Del", "Remove"),
+                ("↑↓", "Disputes"),
+            ],
+        );
+    }
+    if managing && input_enabled {
+        shortcut_bar(
+            width,
+            &[
+                ("Enter", "Send"),
+                ("Shift+I", "Commands"),
+                ("Ctrl+H", "Help"),
+                ("Ctrl+C", "Copy"),
+            ],
+        )
+    } else if managing {
+        shortcut_bar(
+            width,
+            &[("Shift+I", "Write"), ("Ctrl+H", "Help"), ("Ctrl+C", "Copy")],
+        )
+    } else {
+        shortcut_bar(
+            width,
+            &[
+                ("Ctrl+H", "Help"),
+                ("Shift+F", "Resolve"),
+                ("Shift+R", "Recover"),
+                ("↑↓", "Disputes"),
+            ],
+        )
+    }
+}
+
+fn dispute_copy_controls(width: u16) -> Text<'static> {
+    let hints = [("↑↓", "Select"), ("Enter", "Copy"), ("Esc", "Cancel")];
+    let full = shortcut_bar(u16::MAX, &hints);
+    if full.width() <= usize::from(width) {
+        Text::from(full)
+    } else {
+        Text::from(
+            hints
+                .iter()
+                .map(|&(key, label)| {
+                    let line = shortcut_bar(width, &[(key, label)]);
+                    if line.spans.is_empty() {
+                        shortcut_bar(width, &[(key, "")])
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+fn filter_hint_label(filter: DisputeFilter) -> &'static str {
+    match filter {
+        DisputeFilter::InProgress => "Finalized",
+        DisputeFilter::Finalized => "In progress",
+    }
+}
+
 /// Render the "Disputes in Progress" tab for admin mode
 /// This shows a sidebar with active disputes and a detailed view with chat interface
 /// Can filter between InProgress and Finalized disputes
@@ -85,10 +189,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     } else {
         chunks[1]
     };
-    let copy_hint = if main_area.width < 34 {
-        "↑↓ Select\nEnter Copy\nEsc Cancel"
+    let copy_controls = if let Some(feedback) = copy_feedback {
+        Text::styled(feedback, Style::default().fg(PRIMARY_COLOR))
     } else {
-        CHAT_COPY_HINT
+        dispute_copy_controls(main_area.width)
     };
 
     // Filter disputes based on current filter
@@ -105,6 +209,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
     };
     let disputes_block = Block::default()
         .title(sidebar_title)
+        .title_bottom(shortcut_bar(
+            sidebar_area.width.saturating_sub(2),
+            &[("↑↓", "Disputes")],
+        ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -213,25 +321,15 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             // Cap at reasonable maximum (e.g., 10 lines) and add 2 for borders
             let mut input_height = (input_lines.min(10) as u16) + 2;
-            // Mid (50–89) and wide (≥90) active footers use two hint lines; toast adds a third.
-            let use_two_line_footer = main_area.width >= 50;
-            let mut footer_height = if app.attachment_toast.is_some() {
-                if use_two_line_footer {
-                    3
-                } else {
-                    2
-                }
-            } else if use_two_line_footer {
-                2
-            } else {
-                1
-            };
+            // One keycap command row (+ toast). Contextual hints live on the chat border.
+            let toast_extra = u16::from(app.attachment_toast.is_some());
+            let mut footer_height = 1u16.saturating_add(toast_extra);
 
             let mut header_height = 7;
             let mut party_height = 3;
             if copy_context {
-                footer_height = Paragraph::new(copy_feedback.unwrap_or(copy_hint))
-                    .wrap(ratatui::widgets::Wrap { trim: true })
+                footer_height = Paragraph::new(copy_controls.clone())
+                    .wrap(Wrap { trim: true })
                     .line_count(main_area.width.max(1))
                     .min(3) as u16;
                 let spare = main_area.height.saturating_sub(footer_height + 4);
@@ -247,7 +345,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     Constraint::Length(party_height),
                     Constraint::Min(0),                // Chat
                     Constraint::Length(input_height),  // Input (dynamic!)
-                    Constraint::Length(footer_height), // Footer (2 mid/wide; +1 toast)
+                    Constraint::Length(footer_height), // Command bar (+ toast)
                 ],
             )
             .split(main_area)
@@ -737,10 +835,6 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
                 let chat_title = if copy_selection.is_some() {
                     format!("Copy: {}", app.active_chat_party)
-                } else if main_area.width < 50
-                    && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
-                {
-                    format!("Chat {} | {}", app.active_chat_party, CHAT_COPY_START)
                 } else if visible_count > 0 {
                     if file_count > 0 {
                         format!(
@@ -757,8 +851,30 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     format!("Chat with {} (no messages)", app.active_chat_party)
                 };
 
+                let has_selected_attachment = get_selected_chat_message(app, dispute_id_key)
+                    .and_then(|m| m.attachment.as_ref())
+                    .is_some();
+                // Resolve/Recover stay visible here (no Ctrl+K Actions menu yet).
+                let mut chat_hints = vec![
+                    ("Tab", "Party"),
+                    ("Shift+F", "Resolve"),
+                    ("Shift+R", "Recover"),
+                    ("Del", "Remove"),
+                    ("Shift+C", filter_hint_label(app.dispute_filter)),
+                ];
+                if has_selected_attachment {
+                    chat_hints.push(("Ctrl+S", "Save file"));
+                }
+                chat_hints.push(("PgUp/PgDn", "Scroll"));
+                let chat_border_hints = if copy_context {
+                    Line::default()
+                } else {
+                    shortcut_bar(chat_area.width.saturating_sub(2), &chat_hints)
+                };
+
                 let chat_block = Block::default()
                     .title(chat_title)
+                    .title_bottom(chat_border_hints)
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -802,12 +918,21 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     Style::default().fg(Color::Gray)
                 };
 
+                let input_width = main_chunks[3].width;
                 let input_title = if copy_selection.is_some() {
                     "Message (copying)"
                 } else if is_input_focused && is_input_enabled {
-                    "💬 Message (typing enabled)"
+                    if input_width < 36 {
+                        "INSERT · Shift+I"
+                    } else {
+                        "Message / INSERT"
+                    }
                 } else if is_input_focused && !is_input_enabled {
-                    "💬 Message (disabled - Shift+I to enable)"
+                    if input_width < 36 {
+                        "COMMAND · Shift+I"
+                    } else {
+                        "Message / COMMAND"
+                    }
                 } else {
                     "Message"
                 };
@@ -829,190 +954,49 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                             .border_style(input_border_style)
                             .style(input_style),
                     )
-                    .wrap(ratatui::widgets::Wrap { trim: true }); // Enable text wrapping with trimmed spaces
+                    .wrap(Wrap { trim: true });
                 f.render_widget(input, main_chunks[3]);
             }
         }
 
-        // Footer (width-aware: minimal on narrow, 1 or 2 lines when wide; always include Ctrl+H)
-        let filter_hint = match app.dispute_filter {
-            DisputeFilter::InProgress => FILTER_VIEW_FINALIZED,
-            DisputeFilter::Finalized => FILTER_VIEW_IN_PROGRESS,
-        };
-        let has_selected_attachment = !is_finalized
-            && get_selected_chat_message(app, &selected_dispute.dispute_id)
-                .and_then(|m| m.attachment.as_ref())
-                .is_some();
-        let ctrl_s_hint = if has_selected_attachment {
-            FOOTER_CTRL_S_SAVE_FILE
-        } else {
-            ""
-        };
+        // Compact keycap command bar (contextual party/file/filter hints sit on the chat border).
         let footer_chunk_idx = if is_finalized { 1 } else { 4 };
         let footer_area = main_chunks[footer_chunk_idx];
-        let footer_width = footer_area.width;
+        let toast_extra = u16::from(!is_finalized && app.attachment_toast.is_some());
+        let hint_height = footer_area.height.saturating_sub(toast_extra);
 
         if copy_context {
             f.render_widget(
-                Paragraph::new(copy_feedback.unwrap_or(copy_hint))
-                    .style(Style::default().fg(PRIMARY_COLOR))
-                    .wrap(ratatui::widgets::Wrap { trim: true }),
+                Paragraph::new(copy_controls).wrap(Wrap { trim: true }),
                 footer_area,
             );
             return;
         }
 
-        // Mid (50–89) and wide (≥90): two lines when active so Delete/party/filter/Ctrl+S are not clipped
-        let (mut footer_line1, footer_line2) = if footer_width < 50 {
-            (HELP_KEY.to_string(), None)
-        } else if footer_width < 90 {
-            let is_input_focused =
-                matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
-            if is_finalized {
-                (
-                    format!(
-                        "{} | {} | {} | {}",
-                        HELP_KEY, filter_hint, FOOTER_DELETE_LOCAL, FOOTER_UP_DOWN_SELECT_DISPUTE
-                    ),
-                    None,
-                )
-            } else if is_input_focused && app.admin_chat_input_enabled {
-                (
-                    format!(
-                        "{} | {} | {} | {}",
-                        HELP_KEY, FOOTER_ENTER_SEND, FOOTER_SHIFT_F_RESOLVE, FOOTER_SHIFT_R_RECOVER
-                    ),
-                    Some(format!(
-                        "{} | {} | {}{}",
-                        FOOTER_DELETE_LOCAL, FOOTER_TAB_PARTY, filter_hint, ctrl_s_hint
-                    )),
-                )
-            } else {
-                (
-                    format!(
-                        "{} | {} | {} | {}",
-                        HELP_KEY,
-                        FOOTER_SHIFT_F_RESOLVE,
-                        FOOTER_SHIFT_R_RECOVER,
-                        FOOTER_DELETE_LOCAL
-                    ),
-                    Some(format!(
-                        "{} | {}{}",
-                        FOOTER_TAB_PARTY, filter_hint, ctrl_s_hint
-                    )),
-                )
-            }
-        } else if is_finalized {
-            (
-                format!(
-                    "{} | {} | {} | {}",
-                    HELP_KEY, filter_hint, FOOTER_DELETE_LOCAL, FOOTER_UP_DOWN_SELECT_DISPUTE
-                ),
-                None,
-            )
-        } else {
-            let is_input_focused =
-                matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
-            let (line1, line2) = if is_input_focused {
-                let is_input_enabled = app.admin_chat_input_enabled;
-                if is_input_enabled {
-                    (
-                        format!(
-                            "{} | {} | {} | {} | {} | {} | {}",
-                            HELP_KEY,
-                            FOOTER_TAB_SWITCH_PARTY,
-                            FOOTER_ENTER_SEND,
-                            FOOTER_SHIFT_I_DISABLE,
-                            FOOTER_SHIFT_F_RESOLVE,
-                            FOOTER_SHIFT_R_RECOVER,
-                            filter_hint
-                        ),
-                        format!(
-                            "{} | {} | {} | {}{}",
-                            FOOTER_DELETE_LOCAL,
-                            FOOTER_PGUP_PGDN_SCROLL,
-                            FOOTER_END_BOTTOM,
-                            FOOTER_UP_DOWN_SELECT_DISPUTE,
-                            ctrl_s_hint
-                        ),
-                    )
-                } else {
-                    (
-                        format!(
-                            "{} | {} | {} | {} | {} | {}{}",
-                            HELP_KEY,
-                            FOOTER_TAB_SWITCH_PARTY,
-                            FOOTER_SHIFT_I_ENABLE,
-                            FOOTER_SHIFT_F_RESOLVE,
-                            FOOTER_SHIFT_R_RECOVER,
-                            filter_hint,
-                            ctrl_s_hint
-                        ),
-                        format!(
-                            "{} | {} | {} | {} | {}",
-                            FOOTER_DELETE_LOCAL,
-                            FOOTER_PGUP_PGDN_SCROLL,
-                            FOOTER_NAV_CHAT,
-                            FOOTER_END_BOTTOM,
-                            FOOTER_UP_DOWN_SELECT_DISPUTE
-                        ),
-                    )
-                }
-            } else {
-                (
-                    format!(
-                        "{} | {} | {} | {} | {} | {}",
-                        HELP_KEY,
-                        FOOTER_TAB_SWITCH_PARTY,
-                        FOOTER_SHIFT_F_RESOLVE,
-                        FOOTER_SHIFT_R_RECOVER,
-                        filter_hint,
-                        FOOTER_UP_DOWN_SELECT_DISPUTE
-                    ),
-                    format!(
-                        "{} | {}{}",
-                        FOOTER_PGUP_PGDN_SCROLL_CHAT, FOOTER_END_BOTTOM, ctrl_s_hint
-                    ),
-                )
-            };
-            (line1, Some(line2))
-        };
-
-        if !is_finalized && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
-            footer_line1 = format!("{CHAT_COPY_START} | {footer_line1}");
-        }
-
-        match (!is_finalized, app.attachment_toast.as_ref()) {
-            (true, Some((toast_msg, _))) => {
-                let n = if footer_line2.is_some() { 3 } else { 2 };
-                let chunks = Layout::new(
-                    Direction::Vertical,
-                    (0..n).map(|_| Constraint::Length(1)).collect::<Vec<_>>(),
-                )
-                .split(footer_area);
-                let (toast_area, footer_areas) = (chunks[0], &chunks[1..]);
+        let managing = matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
+        if !is_finalized {
+            if let Some((toast_msg, _)) = app.attachment_toast.as_ref() {
                 f.render_widget(
                     Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
-                    toast_area,
+                    Rect::new(footer_area.x, footer_area.y, footer_area.width, 1),
                 );
-                f.render_widget(Paragraph::new(footer_line1.as_str()), footer_areas[0]);
-                if let Some(ref line2) = footer_line2 {
-                    f.render_widget(Paragraph::new(line2.as_str()), footer_areas[1]);
-                }
             }
-            _ => {
-                if let Some(ref line2) = footer_line2 {
-                    let footer_chunks = Layout::new(
-                        Direction::Vertical,
-                        [Constraint::Length(1), Constraint::Length(1)],
-                    )
-                    .split(footer_area);
-                    f.render_widget(Paragraph::new(footer_line1.as_str()), footer_chunks[0]);
-                    f.render_widget(Paragraph::new(line2.as_str()), footer_chunks[1]);
-                } else {
-                    f.render_widget(Paragraph::new(footer_line1.as_str()), footer_area);
-                }
-            }
+        }
+        if hint_height > 0 {
+            f.render_widget(
+                Paragraph::new(dispute_command_bar(
+                    footer_area.width,
+                    app.admin_chat_input_enabled,
+                    is_finalized,
+                    managing,
+                )),
+                Rect::new(
+                    footer_area.x,
+                    footer_area.y.saturating_add(toast_extra),
+                    footer_area.width,
+                    hint_height,
+                ),
+            );
         }
     } else {
         // No disputes available - show empty message with footer
@@ -1040,22 +1024,18 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(no_selection, inner_chunks[0]);
 
-        // Render footer with key hints (width-aware)
-        let filter_hint = match app.dispute_filter {
-            DisputeFilter::InProgress => FILTER_VIEW_FINALIZED,
-            DisputeFilter::Finalized => FILTER_VIEW_IN_PROGRESS,
-        };
-        let footer_width = inner_chunks[1].width;
-        let footer_text = if footer_width < 50 {
-            HELP_KEY.to_string()
-        } else {
-            format!(
-                "{} | {} | {} | {}",
-                HELP_KEY, filter_hint, FOOTER_SHIFT_R_RECOVER, FOOTER_UP_DOWN_SELECT_DISPUTE
-            )
-        };
-        let footer = Paragraph::new(footer_text);
-        f.render_widget(footer, inner_chunks[1]);
+        f.render_widget(
+            Paragraph::new(shortcut_bar(
+                inner_chunks[1].width,
+                &[
+                    ("Ctrl+H", "Help"),
+                    ("Shift+C", filter_hint_label(app.dispute_filter)),
+                    ("Shift+R", "Recover"),
+                    ("↑↓", "Disputes"),
+                ],
+            )),
+            inner_chunks[1],
+        );
     }
 }
 
@@ -1066,15 +1046,13 @@ mod tests {
     use super::truncate_dispute_id_label;
     use super::user_closed_resolution_label;
     use crate::models::AdminDispute;
-    use crate::ui::constants::{
-        FILTER_VIEW_FINALIZED, FILTER_VIEW_IN_PROGRESS, FOOTER_DELETE_LOCAL, FOOTER_TAB_PARTY,
-    };
     use crate::ui::key_handler::chat_copy;
     use crate::ui::PRIMARY_COLOR;
     use crate::ui::{AdminMode, AppState, ChatParty, DisputeFilter, UiMode, UserRole};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use std::time::Instant;
 
     fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
         let mut flat = String::new();
@@ -1418,45 +1396,140 @@ mod tests {
         );
     }
 
-    /// Mid-width main panel (50–89) reserves two footer rows so Delete / Tab /
-    /// filter hints from `footer_line2` are not clipped into a one-row footer.
     #[test]
-    fn mid_width_active_footer_keeps_second_line_hints_visible() {
+    fn shortcut_bar_keeps_complete_groups_within_display_width() {
+        let hints = [
+            ("Shift+I", "Write"),
+            ("Shift+F", "Resolve"),
+            ("Ctrl+H", "Help"),
+        ];
+        for width in 0..120 {
+            let line = super::shortcut_bar(width, &hints);
+            assert!(line.width() <= usize::from(width));
+            let text = line.to_string();
+            assert_eq!(text.contains("Shift+F"), text.contains("Resolve"));
+            assert_eq!(text.contains("Ctrl+H"), text.contains("Help"));
+        }
+        assert_eq!(
+            super::shortcut_bar(15, &hints).to_string(),
+            " Shift+I  Write"
+        );
+        assert!(super::shortcut_bar(14, &hints).spans.is_empty());
+        let line = super::shortcut_bar(80, &hints);
+        assert_eq!(line.spans[0].style.bg, Some(PRIMARY_COLOR));
+        assert_eq!(
+            line.spans[3].style.bg,
+            Some(ratatui::style::Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn command_bar_and_copy_controls_fit_narrow_widths() {
+        for width in 0..120 {
+            for insert in [false, true] {
+                let line = super::dispute_command_bar(width, insert, false, true);
+                assert!(line.width() <= usize::from(width));
+                let text = line.to_string();
+                if width >= 32 {
+                    assert!(text.contains(if insert { "Commands" } else { "Help" }));
+                }
+            }
+            let controls = super::dispute_copy_controls(width);
+            assert!(controls
+                .lines
+                .iter()
+                .all(|line| line.width() <= usize::from(width)));
+            if width >= 14 {
+                let text = controls.to_string();
+                for label in ["Select", "Copy", "Cancel"] {
+                    assert!(text.contains(label), "missing {label} at width {width}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn command_bar_shows_primary_actions_on_one_row() {
         let mut app = AppState::new(UserRole::Admin);
-        app.admin_disputes_in_progress = vec![dispute("dip-mid", "in-progress")];
-        app.selected_dispute_id = Some("dip-mid".to_string());
+        app.admin_disputes_in_progress = vec![dispute("dip-cmd", "in-progress")];
+        app.selected_dispute_id = Some("dip-cmd".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.admin_chat_input_enabled = false;
+
+        let backend = TestBackend::new(120, 28);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        for label in ["Write", "Help", "Copy"] {
+            assert!(
+                buffer_contains(buffer, label),
+                "missing COMMAND label {label}"
+            );
+        }
+        for label in ["Resolve", "Recover", "Party"] {
+            assert!(
+                buffer_contains(buffer, label),
+                "missing chat-border label {label}"
+            );
+        }
+        assert!(buffer_contains(buffer, "Message / COMMAND"));
+        assert!(!buffer_contains(buffer, "Shift+I: Enable"));
+        assert!(!buffer_contains(buffer, "Shift+F: Resolve"));
+
+        app.admin_chat_input_enabled = true;
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        for label in ["Send", "Commands", "Help", "Copy"] {
+            assert!(
+                buffer_contains(buffer, label),
+                "missing INSERT label {label}"
+            );
+        }
+        assert!(!buffer_contains(buffer, "Write"));
+        assert!(buffer_contains(buffer, "Message / INSERT"));
+    }
+
+    #[test]
+    fn party_filter_and_delete_hints_stay_on_the_chat_border() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = vec![dispute("dip-border", "in-progress")];
+        app.selected_dispute_id = Some("dip-border".to_string());
         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
 
-        // Total 80 → main ~64 (in 50–89 mid band). Tall enough for header/chat/2-line footer.
-        let backend = TestBackend::new(80, 28);
+        let backend = TestBackend::new(120, 28);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
             .expect("draw");
 
         let buf = terminal.backend().buffer();
+        for label in ["Party", "Resolve", "Recover", "Remove"] {
+            assert!(
+                buffer_contains(buf, label),
+                "chat-border hint missing: {label}"
+            );
+        }
         assert!(
-            buffer_contains(buf, FOOTER_DELETE_LOCAL),
-            "Delete hint must stay visible on mid-width two-line footer"
+            buffer_contains(buf, "Finalized") || buffer_contains(buf, "In progress"),
+            "filter toggle hint must stay on the chat border"
         );
         assert!(
-            buffer_contains(buf, FOOTER_TAB_PARTY),
-            "Tab party hint must stay visible on mid-width footer line 2"
-        );
-        assert!(
-            buffer_contains(buf, FILTER_VIEW_FINALIZED)
-                || buffer_contains(buf, FILTER_VIEW_IN_PROGRESS),
-            "filter toggle hint must stay visible on mid-width footer line 2"
+            buffer_contains(buf, "Write") || buffer_contains(buf, "Help"),
+            "primary command bar must remain visible"
         );
     }
 
     #[test]
-    fn mid_width_active_footer_with_toast_keeps_hints_and_toast() {
+    fn command_bar_with_toast_keeps_hints_and_toast() {
         let mut app = AppState::new(UserRole::Admin);
-        app.admin_disputes_in_progress = vec![dispute("dip-mid", "in-progress")];
-        app.selected_dispute_id = Some("dip-mid".to_string());
+        app.admin_disputes_in_progress = vec![dispute("dip-toast", "in-progress")];
+        app.selected_dispute_id = Some("dip-toast".to_string());
         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-        app.attachment_toast = Some(("File saved".to_string(), std::time::Instant::now()));
+        app.attachment_toast = Some(("File saved".to_string(), Instant::now()));
 
         let backend = TestBackend::new(80, 28);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1470,12 +1543,41 @@ mod tests {
             "attachment toast must reserve its own footer row"
         );
         assert!(
-            buffer_contains(buf, FOOTER_DELETE_LOCAL),
-            "Delete hint must remain visible with toast + two hint lines"
+            buffer_contains(buf, "Resolve") || buffer_contains(buf, "Write"),
+            "command bar must remain visible with toast"
         );
         assert!(
-            buffer_contains(buf, FOOTER_TAB_PARTY),
-            "Tab party hint must remain visible with toast + two hint lines"
+            buffer_contains(buf, "Party"),
+            "party hint must remain on the chat border with toast"
+        );
+    }
+
+    #[test]
+    fn narrow_input_title_keeps_shift_i_mode_hint() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = vec![dispute("dip-narrow", "in-progress")];
+        app.selected_dispute_id = Some("dip-narrow".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.admin_chat_input_enabled = false;
+
+        // Narrow main panel so the input title uses the compact form (< 36 cols).
+        let backend = TestBackend::new(42, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+        assert!(
+            buffer_contains(terminal.backend().buffer(), "COMMAND · Shift+I"),
+            "narrow COMMAND title must keep the Shift+I hint"
+        );
+
+        app.admin_chat_input_enabled = true;
+        terminal
+            .draw(|f| render_disputes_in_progress(f, f.area(), &mut app))
+            .expect("draw");
+        assert!(
+            buffer_contains(terminal.backend().buffer(), "INSERT · Shift+I"),
+            "narrow INSERT title must keep the Shift+I hint"
         );
     }
 }
