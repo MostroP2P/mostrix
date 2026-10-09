@@ -274,6 +274,7 @@ pub struct AppState {
     pub(crate) chat_copy_session: Option<ChatCopySession>,
     pub(crate) chat_copy_feedback: Option<ChatCopyFeedback>,
     pub(crate) chat_copy_cancelled: bool,
+    pub(crate) chat_copy_block_enter: bool,
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
     pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
     /// Selected message index for chat navigation (Up/Down) and footer hint; Save Attachment popup uses its own selection.
@@ -447,6 +448,7 @@ impl AppState {
             chat_copy_session: None,
             chat_copy_feedback: None,
             chat_copy_cancelled: false,
+            chat_copy_block_enter: false,
             admin_dispute_chats: HashMap::new(),
             admin_chat_scrollview_state: tui_scrollview::ScrollViewState::default(),
             admin_chat_selected_message_idx: None,

@@ -7,13 +7,10 @@ use super::constants::*;
 use super::{AppState, DisputeFilter, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::navigation::{AdminTab, Tab, UserRole, UserTab};
 
-// 18 shortcuts, intro, close hint, borders, and margin — needs >24 rows so
-// 80×24 terminals take the compact layout instead of clipping the full list.
 const NOTIFICATIONS_HELP_USER: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages and chats. Saves notifications_enabled in settings.toml.";
 /// Admins are also alerted when Serbero hands a dispute to a person or
 /// could not start mediating it.
 const NOTIFICATIONS_HELP_ADMIN: &str = "Toggle ON/OFF all out-of-focus alerts (bell, title badge, sound) for new trade messages, chats, Serbero handoffs and failed openings. Saves notifications_enabled in settings.toml.";
-const MY_TRADES_FULL_HELP_MIN_HEIGHT: u16 = 25;
 const MY_TRADES_FULL_HELP_MIN_WIDTH: u16 = 60;
 const ORDERS_FULL_HELP_MIN_HEIGHT: u16 = 11;
 const ORDERS_FULL_HELP_MIN_WIDTH: u16 = 48;
@@ -24,8 +21,6 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     let (title, plain_lines) = help_content(app, tab);
     let narrow_my_trades =
         matches!(tab, Tab::User(UserTab::MyTrades)) && area.width < MY_TRADES_FULL_HELP_MIN_WIDTH;
-    let compact_my_trades = matches!(tab, Tab::User(UserTab::MyTrades))
-        && (area.height < MY_TRADES_FULL_HELP_MIN_HEIGHT || narrow_my_trades);
     let narrow_orders =
         matches!(tab, Tab::User(UserTab::Orders)) && area.width < ORDERS_FULL_HELP_MIN_WIDTH;
     let compact_orders = matches!(tab, Tab::User(UserTab::Orders))
@@ -82,6 +77,20 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         .style(Style::default().bg(BACKGROUND_COLOR));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
+
+    let compact_my_trades = if matches!(tab, Tab::User(UserTab::MyTrades)) {
+        let full_lines: Vec<_> = std::iter::once(help_my_trades_intro())
+            .chain(plain_lines.iter().map(|line| help_shortcut_line(line)))
+            .chain(std::iter::once(Line::raw(HELP_CLOSE_HINT)))
+            .collect();
+        narrow_my_trades
+            || Paragraph::new(full_lines)
+                .wrap(Wrap { trim: true })
+                .line_count(inner.width.max(1))
+                > usize::from(inner.height)
+    } else {
+        false
+    };
 
     if compact_chrome {
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -865,18 +874,40 @@ mod help_content_tests {
     }
 
     #[test]
-    fn eighty_by_twenty_five_my_trades_help_uses_full_layout() {
-        let backend = TestBackend::new(80, 25);
-        let mut terminal = Terminal::new(backend).unwrap();
+    fn my_trades_help_keeps_bottom_controls_across_full_layout_boundary() {
         let app = AppState::new(UserRole::User);
-        terminal
-            .draw(|f| render_help_popup(f, &app, Tab::User(UserTab::MyTrades)))
-            .unwrap();
-        let buf = terminal.backend().buffer();
-        assert!(
-            buffer_contains(buf, "capitals OK"),
-            "80×25 boundary should select the full My Trades help layout"
-        );
+        for width in [60, 80, 120] {
+            let mut saw_full = false;
+            for height in 24..=50 {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| render_help_popup(frame, &app, Tab::User(UserTab::MyTrades)))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                assert!(
+                    buffer_contains(buffer, HELP_CLOSE_HINT),
+                    "missing close hint at {width}x{height}: {}",
+                    buffer_text(buffer)
+                );
+                if buffer_contains(buffer, "capitals OK") {
+                    saw_full = true;
+                    for expected in ["Ctrl+Shift+O", "Shift+H", "Ctrl+C"] {
+                        assert!(
+                            buffer_contains(buffer, expected),
+                            "missing {expected} at {width}x{height}: {}",
+                            buffer_text(buffer)
+                        );
+                    }
+                } else {
+                    assert!(!saw_full, "full layout must not revert as height increases");
+                    assert!(buffer_contains(buffer, "INSERT typing"));
+                }
+                if width == 80 && height == 25 {
+                    assert!(!saw_full, "80x25 must stay compact until full help fits");
+                }
+            }
+            assert!(saw_full, "full help must be available when it fits");
+        }
     }
 
     #[test]

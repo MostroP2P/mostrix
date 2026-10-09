@@ -315,6 +315,7 @@ fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
         return;
     }
     if !pasted_text.is_empty() {
+        app.chat_copy_block_enter = false;
         app.chat_copy_feedback = None;
     }
     let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();

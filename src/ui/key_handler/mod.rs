@@ -3551,6 +3551,7 @@ mod key_handler_tests {
     #[tokio::test]
     async fn chat_copy_post_copy_dispatch_blocks_consecutive_enter_presses() {
         use crate::ui::{ChatAttachment, ChatAttachmentType};
+        use crate::util::dm_utils::handle_operation_result;
 
         let attachment = ChatAttachment {
             blossom_url: "https://example.com/blob".into(),
@@ -3582,6 +3583,7 @@ mod key_handler_tests {
             for message in &mut app.observer_messages {
                 message.attachment = Some(attachment.clone());
             }
+            let original_mode = app.mode.clone();
             let mode = std::mem::discriminant(&app.mode);
             let inputs = (
                 app.admin_chat_input.clone(),
@@ -3602,6 +3604,33 @@ mod key_handler_tests {
                 )
                 .await;
                 assert_eq!(chat_copy::feedback_text(&app), Some("No filename to copy"));
+                assert_eq!(std::mem::discriminant(&app.mode), mode);
+            }
+            handle_operation_result(
+                OperationResult::Info("Background operation completed".into()),
+                &mut app,
+            );
+            assert!(matches!(app.mode, UiMode::OperationResult(_)));
+            chat_copy::validate_selection(&mut app);
+            for _ in 0..4 {
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
+                assert!(
+                    matches!(app.mode, UiMode::OperationResult(_)),
+                    "repeated Enter must not dismiss the async popup"
+                );
+            }
+            app.mode = original_mode;
+            app.chat_copy_feedback = None;
+            for _ in 0..4 {
+                dispatch_observer_test_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                )
+                .await;
                 assert_eq!(std::mem::discriminant(&app.mode), mode);
             }
             assert_eq!(

@@ -31,7 +31,6 @@ pub(crate) struct ChatCopySession {
 pub(crate) struct ChatCopyFeedback {
     target: ChatCopyTarget,
     text: &'static str,
-    block_enter: bool,
 }
 
 fn focused_target(app: &AppState) -> Option<ChatCopyTarget> {
@@ -280,14 +279,11 @@ fn handle_key_with_result(
     key: &KeyEvent,
     copy: impl FnOnce(String) -> CopyOutcome,
 ) -> bool {
-    if let Some(feedback) = app.chat_copy_feedback.take() {
-        if feedback.block_enter && key.code == KeyCode::Enter {
-            if focused_target(app).as_ref() == Some(&feedback.target) {
-                app.chat_copy_feedback = Some(feedback);
-            }
-            return true;
-        }
+    if app.chat_copy_block_enter && key.code == KeyCode::Enter {
+        return true;
     }
+    app.chat_copy_block_enter = false;
+    app.chat_copy_feedback = None;
     if app.user_role == UserRole::Admin
         && app.observer_inputs_editable()
         && (app.chat_copy_session.is_some() || app.chat_copy_cancelled)
@@ -328,8 +324,8 @@ fn handle_key_with_result(
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
                     target: session.target,
                     text: feedback,
-                    block_enter: true,
                 });
+                app.chat_copy_block_enter = true;
                 return true;
             }
             KeyCode::Up | KeyCode::Down => {
@@ -371,7 +367,6 @@ fn handle_key_with_result(
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
                     target,
                     text: "No messages to copy",
-                    block_enter: false,
                 });
             }
             return true;

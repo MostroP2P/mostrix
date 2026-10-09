@@ -314,11 +314,14 @@ The next key is consumed to prevent an intended copy from sending a draft,
 fetching a conversation, or confirming a popup. Paste is also blocked while this
 cancellation is pending. An empty or loading transcript reports **No messages to
 copy** without entering selection. Copy feedback belongs only to its conversation.
-After Enter finishes a copy attempt, further Enter presses are ignored and the
-completion feedback remains visible until another key or a nonempty paste. This
-prevents legacy terminal key repeats from sending the preserved draft or starting
+After Enter finishes a copy attempt, further Enter presses are ignored until
+another key or a nonempty paste. This prevents legacy terminal key repeats from
+sending the preserved draft or starting
 an Observer fetch. Fresh input dismisses the feedback and restores normal Enter
 handling; the draft and input layer are not changed by the guard.
+The Enter latch is independent of feedback and temporary focus changes: an async
+popup appearing or disappearing does not reset it. Use **Esc** to dismiss an
+async popup; repeated Enter presses remain ignored until fresh input.
 
 In Observer, **Enter copies instead of fetching while selecting**. **Ctrl+L** still
 securely clears the Shared key, messages, error, and loading state, cancels copy
