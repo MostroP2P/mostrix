@@ -15,6 +15,7 @@ use crate::ui::chat::{
     UserChatChannel, UserOrderChatMessage,
 };
 use crate::ui::helpers::OrderChatListItem;
+use crate::ui::key_handler::chat_copy::{ChatCopyFeedback, ChatCopySession};
 use crate::ui::navigation::{AdminTab, Tab, UserRole};
 use crate::ui::orders::{
     BuyerInvoicePreference, FormState, InvoiceInputState, KeyInputState, MessageNotification,
@@ -270,6 +271,8 @@ pub struct AppState {
     pub active_chat_party: ChatParty, // Which party the admin is currently chatting with
     pub admin_chat_input: String,     // Current message being typed by admin
     pub admin_chat_input_enabled: bool, // Whether chat input is enabled (toggle with Shift+I)
+    pub(crate) chat_copy_session: Option<ChatCopySession>,
+    pub(crate) chat_copy_feedback: Option<ChatCopyFeedback>,
     pub admin_dispute_chats: HashMap<String, Vec<DisputeChatMessage>>, // Chat messages per dispute ID
     pub admin_chat_scrollview_state: tui_scrollview::ScrollViewState,
     /// Selected message index for chat navigation (Up/Down) and footer hint; Save Attachment popup uses its own selection.
@@ -440,6 +443,8 @@ impl AppState {
             active_chat_party: ChatParty::Buyer,
             admin_chat_input: String::new(),
             admin_chat_input_enabled: true, // Chat input enabled by default
+            chat_copy_session: None,
+            chat_copy_feedback: None,
             admin_dispute_chats: HashMap::new(),
             admin_chat_scrollview_state: tui_scrollview::ScrollViewState::default(),
             admin_chat_selected_message_idx: None,

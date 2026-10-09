@@ -311,6 +311,9 @@ fn setup_logger(level: &str) -> Result<(), fern::InitError> {
 }
 
 fn apply_pasted_text_to_active_input(app: &mut AppState, pasted_text: &str) {
+    if app.chat_copy_session.is_some() {
+        return;
+    }
     let filtered_text: String = pasted_text.chars().filter(|c| !c.is_control()).collect();
 
     if let UiMode::OrderFilters(ref mut state) = app.mode {
@@ -1255,6 +1258,28 @@ mod own_reputation_refresh_tests {
 
 #[cfg(test)]
 mod paste_routing_tests {
+    #[test]
+    fn chat_copy_blocks_bracketed_and_mouse_paste_without_changing_draft() {
+        use crate::ui::key_handler::chat_copy;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = chat_copy::tests::app_with_messages();
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            |_| panic!("entry must not write clipboard"),
+        );
+        super::apply_pasted_text_to_active_input(&mut app, "replacement\n");
+        assert_eq!(app.admin_chat_input, "draft\n  untouched");
+        chat_copy::handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            |_| false,
+        );
+        super::apply_pasted_text_to_active_input(&mut app, "paste\n");
+        assert_eq!(app.admin_chat_input, "draft\n  untouchedpaste\n");
+    }
+
     use super::*;
     use crate::ui::{KeyInputState, UserRole};
 

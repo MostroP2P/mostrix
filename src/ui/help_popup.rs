@@ -548,6 +548,10 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 lines.push(HELP_DIP_PASTE_CHAT.to_string());
                 lines.push(HELP_DIP_DELETE_LOCAL.to_string());
                 lines.push(HELP_DIP_CTRL_S_ATTACH.to_string());
+                if !app.admin_show_solver_dms {
+                    lines.push(HELP_DIP_COPY.to_string());
+                    lines.push(HELP_DIP_COPY_KEYS.to_string());
+                }
             } else {
                 lines.push(HELP_DIP_DELETE_LOCAL.to_string());
             }

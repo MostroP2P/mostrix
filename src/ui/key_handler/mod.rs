@@ -1,5 +1,6 @@
 mod admin_handlers;
 mod async_tasks;
+pub(crate) mod chat_copy;
 pub(crate) mod chat_helpers;
 mod confirmation;
 mod enter_handlers;
@@ -265,6 +266,7 @@ fn admin_dispute_chat_input_active(app: &AppState) -> bool {
         && matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute))
         && app.admin_chat_input_enabled
         && !app.admin_show_solver_dms
+        && app.chat_copy_session.is_none()
 }
 
 /// Ctrl+T opens the take-over picker from the dispute tabs when no popup is open.
@@ -1241,6 +1243,10 @@ pub fn handle_key_event(
 
     // Clear transient attachment toast on any key press
     app.attachment_toast = None;
+
+    if chat_copy::handle_key(app, &key_event) {
+        return Some(true);
+    }
 
     if let Some(handled) =
         handle_order_filter_paste_shortcut(app, &key_event, read_clipboard_text_best_effort)
@@ -3599,6 +3605,47 @@ mod key_handler_tests {
             assert_eq!(app.observer_error.as_deref(), Some("private error"));
             assert!(app.observer_loading);
             assert_eq!(app.observer_fetch_generation, generation);
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_copy_dispatch_suspends_input_actions_and_paste_until_cancel() {
+        for input_enabled in [false, true] {
+            let mut app = chat_copy::tests::app_with_messages();
+            app.admin_chat_input_enabled = input_enabled;
+            dispatch_observer_test_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            )
+            .await;
+            assert_eq!(chat_copy::selected_index(&app), Some(0));
+            for key in [
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT),
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            ] {
+                dispatch_observer_test_key(&mut app, key).await;
+            }
+            assert!(!append_paste_to_admin_dispute_chat(&mut app, "paste"));
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+                .await;
+            assert_eq!(chat_copy::selected_index(&app), Some(1));
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                .await;
+            assert!(app.chat_copy_session.is_none());
+            assert_eq!(app.admin_chat_input, "draft\n  untouched");
+            assert_eq!(app.admin_chat_input_enabled, input_enabled);
+            assert!(matches!(
+                app.mode,
+                UiMode::AdminMode(AdminMode::ManagingDispute)
+            ));
+            assert_eq!(
+                append_paste_to_admin_dispute_chat(&mut app, "paste"),
+                input_enabled
+            );
         }
     }
 
