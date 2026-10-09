@@ -138,6 +138,7 @@ pub async fn execute_finalize_dispute(
 
     // Dispute left InProgress: drop buyer/seller shared-key chat subscriptions.
     untrack_dispute_chat_parties(&dispute_id_str);
+    crate::util::watchdog::spawn_unwatch(client, admin_keys, &dispute_id_str);
 
     let action_name = if cooperatively_canceled {
         "closed (cooperative cancellation accepted)"

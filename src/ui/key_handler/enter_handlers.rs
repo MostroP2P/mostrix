@@ -426,7 +426,6 @@ fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::Ent
                 &content,
                 ctx.client,
                 ctx.admin_chat_keys,
-                ctx.mostro_info.clone(),
             );
         },
         |app| {
@@ -648,6 +647,8 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         | UiMode::ConfirmRemoveRelay(..)
         | UiMode::ConfirmRestoreDefaultRelays(_)
         | UiMode::AddBlossomServer(_)
+        | UiMode::LinkWatchdogKey(_)
+        | UiMode::LinkWatchdogCode(..)
         | UiMode::ConfirmBlossomServer(_, _)
         | UiMode::RemoveBlossomServer(..)
         | UiMode::ConfirmRemoveBlossomServer(..)
@@ -1030,6 +1031,66 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
     }
 }
 
+/// Links the watchdog in the background with `code`, saving its key once the
+/// link was sent. The returned mode is shown until the result arrives.
+fn start_watchdog_link(watchdog_hex: &str, code: &str, ctx: &super::EnterKeyContext<'_>) -> UiMode {
+    use crate::util::watchdog;
+    let Some(code) = watchdog::normalize_code(code) else {
+        return UiMode::operation_result(OperationResult::Error(
+            "Invalid code: enter the 8 characters the bot sent on /link (e.g. K7QM-2XPA)"
+                .to_string(),
+        ));
+    };
+    let Some(admin_keys) = ctx.admin_chat_keys.cloned() else {
+        return UiMode::operation_result(OperationResult::Error(
+            "Admin private key not configured".to_string(),
+        ));
+    };
+    let watchdog = match watchdog::parse_watchdog_pubkey(watchdog_hex) {
+        Ok(key) => key,
+        Err(e) => return UiMode::operation_result(OperationResult::Error(e)),
+    };
+    let client = ctx.client.clone();
+    let pool = ctx.pool.clone();
+    let result_tx = ctx.order_result_tx.clone();
+    tokio::spawn(async move {
+        let result = match watchdog::link(&client, &pool, &admin_keys, watchdog, &code).await {
+            Ok(outcome) => {
+                let npub = watchdog.to_bech32().unwrap_or_else(|_| watchdog.to_hex());
+                match super::settings::save_watchdog_pubkey_to_settings(&npub) {
+                    Ok(()) => OperationResult::Info(watchdog_linked_message(outcome)),
+                    Err(e) => OperationResult::Error(format!(
+                        "Link sent, but the watchdog key could not be saved; it is used \
+                         until Mostrix restarts: {e}"
+                    )),
+                }
+            }
+            Err(e) => {
+                log::error!("[watchdog] link failed: {e}");
+                OperationResult::Error(format!("Could not link the watchdog: {e}"))
+            }
+        };
+        let _ = result_tx.send(result);
+    });
+    UiMode::operation_result(OperationResult::Info("Linking the watchdog…".to_string()))
+}
+
+/// What to tell the solver once the link was sent.
+fn watchdog_linked_message(outcome: crate::util::watchdog::LinkOutcome) -> String {
+    let mut message = format!(
+        "Link sent to the watchdog: check Telegram for its confirmation. \
+         Watching {} held dispute chat(s).",
+        outcome.watched
+    );
+    if outcome.failed > 0 {
+        message.push_str(&format!(
+            " {} could not be sent and will be watched when you take them again.",
+            outcome.failed
+        ));
+    }
+    message
+}
+
 /// Handle Enter key for settings-related modes (Mostro pubkey, relay, currency, etc.).
 ///
 /// Mostro pubkey input accepts npub or hex; [`normalize_mostro_pubkey`] converts to hex
@@ -1263,6 +1324,17 @@ fn handle_enter_settings_mode(
             } else {
                 app.mode = default_mode;
             }
+        }
+        UiMode::LinkWatchdogKey(key_state) => {
+            app.mode = match crate::util::watchdog::parse_watchdog_pubkey(&key_state.key_input) {
+                Ok(watchdog) => {
+                    UiMode::LinkWatchdogCode(watchdog.to_hex(), create_key_input_state(""))
+                }
+                Err(e) => UiMode::operation_result(OperationResult::Error(e)),
+            };
+        }
+        UiMode::LinkWatchdogCode(watchdog, key_state) => {
+            app.mode = start_watchdog_link(&watchdog, &key_state.key_input, ctx);
         }
         UiMode::AddBlossomServer(key_state) => {
             let normalized = normalize_blossom_server_url(&key_state.key_input);
@@ -1731,6 +1803,13 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             }
             Some(SettingsMenuAction::AddBlossomServer) => {
                 app.mode = UiMode::AddBlossomServer(key_state)
+            }
+            Some(SettingsMenuAction::LinkWatchdog) => {
+                // Prefill the key linked before, so relinking only needs a code.
+                let linked = crate::util::watchdog::linked_watchdog()
+                    .and_then(|k| k.to_bech32().ok())
+                    .unwrap_or_default();
+                app.mode = UiMode::LinkWatchdogKey(create_key_input_state(&linked))
             }
             Some(SettingsMenuAction::RemoveBlossomServer) => {
                 app.mode = UiMode::RemoveBlossomServer(0, load_blossom_servers_for_ui());

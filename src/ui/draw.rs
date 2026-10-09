@@ -394,6 +394,26 @@ pub fn ui_draw(
             Some(&message),
         );
     }
+    if let UiMode::LinkWatchdogKey(key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "📩 Link Watchdog",
+            "Enter the watchdog key the Telegram bot sent on /link:",
+            "npub1...",
+            key_state,
+            false,
+        );
+    }
+    if let UiMode::LinkWatchdogCode(_, key_state) = &app.mode {
+        key_input_popup::render_key_input_popup(
+            f,
+            "📩 Link Watchdog",
+            "Enter the code the Telegram bot sent on /link:",
+            "K7QM-2XPA",
+            key_state,
+            false,
+        );
+    }
     if let UiMode::AddBlossomServer(key_state) = &app.mode {
         key_input_popup::render_key_input_popup(
             f,

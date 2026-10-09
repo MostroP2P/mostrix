@@ -14,6 +14,7 @@ use crate::util::dm_utils::{parse_dm_events, send_dm, wait_for_dm, FETCH_EVENTS_
 use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::helper::{fetch_order_fiat_from_relay, handle_mostro_response};
 use crate::util::types::MostroCantDoError;
+use crate::util::watchdog;
 
 /// Mostro answered `CantDo` to `AdminTakeDispute`.
 #[derive(Debug)]
@@ -208,6 +209,16 @@ pub async fn execute_take_dispute(
         "✅ Dispute {} taken successfully and saved to database with InProgress status!",
         dispute_info.id
     );
+
+    // Ask the linked watchdog, if any, to notify the solver of this chat.
+    match AdminDispute::get_by_dispute_id(pool, &dispute_id.to_string()).await {
+        Ok(Some(saved)) => match watchdog::watch_message_for(&saved) {
+            Some(message) => watchdog::spawn_notify_linked(client, admin_keys, message),
+            None => log::debug!("[watchdog] dispute {dispute_id} has no chat keys to watch"),
+        },
+        Ok(None) => {}
+        Err(e) => log::warn!("[watchdog] could not read dispute {dispute_id} to watch it: {e}"),
+    }
 
     let (buyer_since, seller_since) = dispute_chat_since_from_file(&dispute_id.to_string());
     for (party, cp_pubkey, since) in [

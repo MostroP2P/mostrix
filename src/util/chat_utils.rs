@@ -282,17 +282,47 @@ pub async fn send_admin_chat_message_via_shared_key(
     content: &str,
     _mostro_instance: Option<&MostroInstanceInfo>,
 ) -> Result<bool> {
+    let event = wrap_shared_key_chat_message(admin_keys, shared_keys, content).await?;
+    publish_chat_event(client, &event).await
+}
+
+/// Send a solver's message in a dispute chat. Like
+/// [`send_admin_chat_message_via_shared_key`], but first tells the linked
+/// mostro-watchdog, if any, the event id, so it does not notify the solver
+/// of their own message (`K_sign` is shared by both sides of the chat).
+pub async fn send_dispute_chat_message_as_solver(
+    client: &Client,
+    admin_keys: &Keys,
+    shared_keys: &Keys,
+    content: &str,
+) -> Result<bool> {
+    let event = wrap_shared_key_chat_message(admin_keys, shared_keys, content).await?;
+    crate::util::watchdog::send_receipt(client, admin_keys, event.id).await;
+    publish_chat_event(client, &event).await
+}
+
+/// A kind 14 chat event from `sender_keys` in the channel whose ECDH secret
+/// is `shared_keys`.
+async fn wrap_shared_key_chat_message(
+    sender_keys: &Keys,
+    shared_keys: &Keys,
+    content: &str,
+) -> Result<Event> {
     let content = content.trim();
     if content.is_empty() {
         return Err(anyhow::anyhow!("Cannot send empty admin chat message"));
     }
     let (conv, sign) = chat_keys_from_ecdh(shared_keys)
         .ok_or_else(|| anyhow::anyhow!("Failed to derive K_conv / K_sign from shared key"))?;
-    let event = wrap_chat_message(admin_keys, &conv, &sign, content)
+    wrap_chat_message(sender_keys, &conv, &sign, content)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to wrap admin chat message: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to wrap admin chat message: {e}"))
+}
+
+/// Publishes a chat event; `true` when at least one relay accepted it.
+async fn publish_chat_event(client: &Client, event: &Event) -> Result<bool> {
     let output = client
-        .send_event(&event)
+        .send_event(event)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send admin chat event: {e}"))?;
     Ok(!output.success.is_empty())

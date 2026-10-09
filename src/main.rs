@@ -1136,8 +1136,12 @@ async fn main() -> Result<(), anyhow::Error> {
                     displayed_before.as_deref(),
                     &closed,
                 );
+                let admin_keys = admin_chat_keys_clone_for_role(&app);
                 for dispute_id in closed {
                     untrack_dispute_chat_parties(&dispute_id);
+                    if let Some(admin_keys) = admin_keys.as_ref() {
+                        crate::util::watchdog::spawn_unwatch(&client, admin_keys, &dispute_id);
+                    }
                     // Kind-38386 fallback when the Mostro→solver DM was missed.
                     crate::util::admin_protocol_dms::notify_admin_if_users_closed_dispute(
                         &mut app,

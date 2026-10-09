@@ -257,7 +257,15 @@ async fn backfill_then_follow(
     match history {
         Ok(events) => {
             for event in events.into_iter() {
-                accept(&event, admin_keys, mostro_pubkey, pool, order_result_tx).await;
+                accept(
+                    &event,
+                    client,
+                    admin_keys,
+                    mostro_pubkey,
+                    pool,
+                    order_result_tx,
+                )
+                .await;
             }
         }
         Err(e) => log::warn!("[admin_protocol_dms] history fetch failed: {e}"),
@@ -265,7 +273,15 @@ async fn backfill_then_follow(
 
     while let Some(notification) = notifications.next().await {
         if let ClientNotification::Event { event, .. } = notification {
-            accept(&event, admin_keys, mostro_pubkey, pool, order_result_tx).await;
+            accept(
+                &event,
+                client,
+                admin_keys,
+                mostro_pubkey,
+                pool,
+                order_result_tx,
+            )
+            .await;
         }
         if order_result_tx.is_closed() {
             break;
@@ -286,6 +302,7 @@ fn is_mostro_authored(event: &Event, mostro_pubkey: PublicKey) -> bool {
 /// Decrypt, classify, advance SQLite, and notify the UI when the local row moves.
 async fn accept(
     event: &Event,
+    client: &Client,
     admin_keys: &Keys,
     mostro_pubkey: PublicKey,
     pool: &SqlitePool,
@@ -326,6 +343,7 @@ async fn accept(
                 resolved.order_id
             );
             untrack_dispute_chat_parties(&dispute_id);
+            crate::util::watchdog::spawn_unwatch(client, admin_keys, &dispute_id);
             let _ = order_result_tx.send(OperationResult::DisputeClosedByUsers {
                 dispute_id: resolved.dispute_id,
                 status,
@@ -576,7 +594,15 @@ mod tests {
         )
         .expect("wrap");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        accept(&event, &admin, mostro.public_key(), &pool, &tx).await;
+        accept(
+            &event,
+            &Client::default(),
+            &admin,
+            mostro.public_key(),
+            &pool,
+            &tx,
+        )
+        .await;
 
         assert!(rx.try_recv().is_err(), "foreign author must not notify");
         let row = AdminDispute::get_by_dispute_id(&pool, &dispute_id.to_string())

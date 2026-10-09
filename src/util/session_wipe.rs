@@ -762,6 +762,7 @@ ln_address = "user@domain.com"
             notifications_enabled: true,
             clipboard_osc52: false,
             trusted_dm_senders: vec![],
+            watchdog_pubkey: String::new(),
         };
 
         clear_ln_address(&mut settings);

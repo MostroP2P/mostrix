@@ -694,6 +694,8 @@ pub fn apply_paste_to_focused_key_input(app: &mut AppState, pasted_text: &str) -
         UiMode::AddMostroPubkey(ref mut ks)
         | UiMode::AddRelay(ref mut ks)
         | UiMode::AddBlossomServer(ref mut ks)
+        | UiMode::LinkWatchdogKey(ref mut ks)
+        | UiMode::LinkWatchdogCode(_, ref mut ks)
         | UiMode::AddLnAddress(ref mut ks)
         | UiMode::AddCurrency(ref mut ks)
         | UiMode::ImportSeedWords(ref mut ks)
@@ -1844,6 +1846,8 @@ pub fn handle_key_event(
         UiMode::AddMostroPubkey(_)
             | UiMode::AddRelay(_)
             | UiMode::AddBlossomServer(_)
+            | UiMode::LinkWatchdogKey(_)
+            | UiMode::LinkWatchdogCode(..)
             | UiMode::AddLnAddress(_)
             | UiMode::AddCurrency(_)
             | UiMode::ImportSeedWords(_)
@@ -1854,6 +1858,8 @@ pub fn handle_key_event(
             UiMode::AddMostroPubkey(ref mut ks) => Some(ks),
             UiMode::AddRelay(ref mut ks) => Some(ks),
             UiMode::AddBlossomServer(ref mut ks) => Some(ks),
+            UiMode::LinkWatchdogKey(ref mut ks) => Some(ks),
+            UiMode::LinkWatchdogCode(_, ref mut ks) => Some(ks),
             UiMode::AddLnAddress(ref mut ks) => Some(ks),
             UiMode::AddCurrency(ref mut ks) => Some(ks),
             UiMode::ImportSeedWords(ref mut ks) => Some(ks),
