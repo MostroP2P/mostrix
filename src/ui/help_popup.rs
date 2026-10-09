@@ -337,12 +337,8 @@ fn compact_observer_help(inner_width: u16, inner_height: u16) -> Vec<Line<'stati
     let (title_style, _) = settings_instruction_block_style();
     // Pack essentials first so Ctrl+L / Ctrl+S / Ctrl+C survive the shortest viewports.
     let candidate_rows: &[&str] = if width < 36 || available_rows <= 3 {
-        &[
-            "Enter Ctrl+C",
-            "Ctrl+L Ctrl+S",
-            "Copy: ↑↓ Enter Esc",
-            "↑↓ Esc",
-        ]
+        // Two-row pack for 20x8: load/copy start, then copy nav/cancel + clear/save.
+        &["Enter Ctrl+C ↑↓", "Esc Ctrl+L Ctrl+S"]
     } else {
         &[
             "Enter: Load Shared key",
@@ -845,6 +841,26 @@ mod help_content_tests {
                 buffer_text(buffer)
             );
         }
+    }
+
+    #[test]
+    fn tiny_observer_help_keeps_copy_nav_and_cancel_guidance() {
+        let app = AppState::new(UserRole::Admin);
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        terminal
+            .draw(|frame| render_help_popup(frame, &app, Tab::Admin(AdminTab::Observer)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buffer, "Ctrl+C ↑↓") || buffer_contains(buffer, "Enter Ctrl+C ↑↓"),
+            "copy start/nav guidance missing at 20x8: {}",
+            buffer_text(buffer)
+        );
+        assert!(
+            buffer_contains(buffer, "Esc Ctrl+L") || buffer_contains(buffer, "Esc Ctrl+L Ctrl+S"),
+            "copy-cancel plus clear/save guidance missing at 20x8: {}",
+            buffer_text(buffer)
+        );
     }
 
     #[test]

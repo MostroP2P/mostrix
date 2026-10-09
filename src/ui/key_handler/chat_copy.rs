@@ -4,8 +4,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::ui::helpers::{
-    first_visible_message_index, format_local_timestamp, message_visible_for_party,
-    selected_filtered_dispute,
+    first_visible_message_index, message_visible_for_party, selected_filtered_dispute,
 };
 use crate::ui::key_handler::chat_helpers::live_order_chat_draft_target;
 use crate::ui::key_handler::{copy_to_native_clipboard, NativeClipboardOutcome};
@@ -87,52 +86,28 @@ struct CopyMessage<'a> {
     attachment: Option<&'a ChatAttachment>,
     timestamp: i64,
     sender: u8,
-    role: &'static str,
-}
-
-fn dispute_role(sender: ChatSender) -> &'static str {
-    match sender {
-        ChatSender::Admin => "Admin",
-        ChatSender::Buyer => "Buyer",
-        ChatSender::Seller => "Seller",
-    }
-}
-
-fn order_role(sender: UserChatSender, channel: UserChatChannel) -> &'static str {
-    match sender {
-        UserChatSender::You => "You",
-        UserChatSender::Peer => match channel {
-            UserChatChannel::Peer => "Peer",
-            UserChatChannel::Solver => "Solver",
-        },
-    }
 }
 
 fn messages<'a>(
     app: &'a AppState,
     target: &ChatCopyTarget,
 ) -> impl Iterator<Item = CopyMessage<'a>> {
-    let (disputes, orders, solver_dms, party, order_channel) = match target {
-        ChatCopyTarget::Dispute { id, party } => (
-            app.admin_dispute_chats.get(id),
-            None,
-            None,
-            Some(*party),
-            None,
-        ),
+    let (disputes, orders, solver_dms, party) = match target {
+        ChatCopyTarget::Dispute { id, party } => {
+            (app.admin_dispute_chats.get(id), None, None, Some(*party))
+        }
         ChatCopyTarget::Order { id, channel } => {
             let orders = match channel {
                 UserChatChannel::Peer => app.order_chats.get(&id.to_string()),
                 UserChatChannel::Solver => app.user_dispute_chats.get(&id.to_string()),
             };
-            (None, orders, None, None, Some(*channel))
+            (None, orders, None, None)
         }
         ChatCopyTarget::SolverDm { dispute_id } => {
-            (None, None, app.solver_dms.get(dispute_id), None, None)
+            (None, None, app.solver_dms.get(dispute_id), None)
         }
         ChatCopyTarget::Observer { .. } => (
             (!app.observer_loading).then_some(&app.observer_messages),
-            None,
             None,
             None,
             None,
@@ -152,21 +127,16 @@ fn messages<'a>(
                 ChatSender::Buyer => 1,
                 ChatSender::Seller => 2,
             },
-            role: dispute_role(message.sender),
         })
-        .chain(orders.into_iter().flatten().map(move |message| {
-            let channel = order_channel.unwrap_or(UserChatChannel::Peer);
-            CopyMessage {
-                event_id: None,
-                content: &message.content,
-                attachment: message.attachment.as_ref(),
-                timestamp: message.timestamp,
-                sender: match message.sender {
-                    UserChatSender::You => 0,
-                    UserChatSender::Peer => 1,
-                },
-                role: order_role(message.sender, channel),
-            }
+        .chain(orders.into_iter().flatten().map(|message| CopyMessage {
+            event_id: None,
+            content: &message.content,
+            attachment: message.attachment.as_ref(),
+            timestamp: message.timestamp,
+            sender: match message.sender {
+                UserChatSender::You => 0,
+                UserChatSender::Peer => 1,
+            },
         }))
         .chain(
             solver_dms
@@ -179,7 +149,6 @@ fn messages<'a>(
                     attachment: None,
                     timestamp: message.created_at,
                     sender: 0,
-                    role: "Serbero",
                 }),
         )
 }
@@ -217,25 +186,11 @@ fn resolve_message_index(
         .map(|_| resolved)
 }
 
-fn copy_header(role: &str, timestamp: i64) -> String {
-    let date =
-        format_local_timestamp(timestamp, "%d-%m-%Y").unwrap_or_else(|| "??-??-????".to_string());
-    let time = format_local_timestamp(timestamp, "%H:%M").unwrap_or_else(|| "??:??".to_string());
-    format!("{role} - {date} - {time}")
-}
-
 fn copy_text_for_message(message: CopyMessage<'_>) -> Option<String> {
-    let body = match &message.attachment {
-        Some(attachment) => {
-            (!attachment.filename.is_empty()).then_some(attachment.filename.as_str())?
-        }
-        None => message.content,
-    };
-    Some(format!(
-        "{}\n{}",
-        copy_header(message.role, message.timestamp),
-        body
-    ))
+    match &message.attachment {
+        Some(attachment) => (!attachment.filename.is_empty()).then(|| attachment.filename.clone()),
+        None => Some(message.content.to_owned()),
+    }
 }
 
 fn selection_bounds(session: &ChatCopySession) -> (usize, usize) {
@@ -933,7 +888,6 @@ pub(crate) mod tests {
                     attachment: app.observer_messages[0].attachment.as_ref(),
                     timestamp: app.observer_messages[0].timestamp,
                     sender: 2,
-                    role: "Seller",
                 })
                 .unwrap();
                 let second = copy_text_for_message(CopyMessage {
@@ -942,7 +896,6 @@ pub(crate) mod tests {
                     attachment: app.observer_messages[1].attachment.as_ref(),
                     timestamp: app.observer_messages[1].timestamp,
                     sender: 1,
-                    role: "Buyer",
                 })
                 .unwrap();
                 let expected = if selected == 0 {
@@ -998,7 +951,6 @@ pub(crate) mod tests {
             attachment: app.observer_messages[0].attachment.as_ref(),
             timestamp: app.observer_messages[0].timestamp,
             sender: 2,
-            role: "Seller",
         })
         .unwrap();
         enter_selection(&mut app);
@@ -1112,7 +1064,6 @@ pub(crate) mod tests {
             attachment: None,
             timestamp: dm.created_at,
             sender: 0,
-            role: "Serbero",
         })
         .unwrap();
         enter_selection(&mut app);
@@ -1486,7 +1437,6 @@ pub(crate) mod tests {
             attachment: None,
             timestamp: 1,
             sender: 1,
-            role: "Buyer",
         })
         .unwrap();
         assert!(handle_key_with(
@@ -1516,7 +1466,6 @@ pub(crate) mod tests {
             attachment: None,
             timestamp: 1,
             sender: 0,
-            role: "Admin",
         })
         .unwrap();
         assert!(handle_key_with(
@@ -1550,7 +1499,6 @@ pub(crate) mod tests {
                 attachment: None,
                 timestamp: 1,
                 sender: 1,
-                role: "Buyer",
             })
             .unwrap();
             enter_selection(&mut app);
@@ -1592,23 +1540,12 @@ pub(crate) mod tests {
             file_type: ChatAttachmentType::File,
             decryption_key: None,
         });
-        let expected = copy_text_for_message(CopyMessage {
-            event_id: None,
-            content: "  first\nsecond\tline  ",
-            attachment: app.admin_dispute_chats["dispute"][1].attachment.as_ref(),
-            timestamp: 1,
-            sender: 1,
-            role: "Buyer",
-        })
-        .unwrap();
         enter_selection(&mut app);
         assert!(handle_key_with(
             &mut app,
             &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             |text| {
-                assert_eq!(text, expected);
-                assert!(text.contains("Buyer - "));
-                assert!(text.contains("receipt.txt"));
+                assert_eq!(text, "receipt.txt");
                 true
             }
         ));
@@ -1678,7 +1615,6 @@ pub(crate) mod tests {
             attachment: None,
             timestamp: 1,
             sender: 2,
-            role: "Seller",
         })
         .unwrap();
         assert!(handle_key_with(
@@ -1702,7 +1638,6 @@ pub(crate) mod tests {
             attachment: None,
             timestamp: 1,
             sender: 1,
-            role: "Buyer",
         })
         .unwrap();
         enter_selection(&mut app);

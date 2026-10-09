@@ -300,16 +300,14 @@ Messages tab's trade timeline are not copy-selection targets.
 3. **Enter** copies the highlighted range (joined with newlines) and exits
   selection, even if copying fails. **Esc** exits without copying.
 
-Each copied message is prefixed with its displayed role, date, and time
-(`Role - DD-MM-YYYY - HH:MM`), then the exact stored body on the next line,
-preserving whitespace, Unicode, and newlines. Wrapping and styling are not
-copied. Multiple selected messages are separated by a blank line. Solver DMs use
-the `Serbero` role and still include their full stored text (including the
-header omitted by the renderer). For an attachment, **Enter copies the header
-plus its stored filename**, not its URL, encrypted metadata, file contents, or
-display placeholder. An empty filename reports **No filename to copy** without
-writing to the clipboard. Use **Ctrl+S** outside selection mode to save
-attachments instead.
+Copying uses the exact stored text, preserving whitespace, Unicode, and
+newlines. It does not add displayed timestamps, sender labels, wrapping, or
+styling. Multiple selected messages are separated by a blank line. Solver DMs
+include their full stored text, including the header omitted by the renderer.
+For an attachment, **Enter copies its stored filename**, not its URL, encrypted
+metadata, file contents, or display placeholder. An empty filename reports
+**No filename to copy** without writing to the clipboard. Use **Ctrl+S** outside
+selection mode to save attachments instead.
 
 Selection does not change the draft, its owning conversation, or the enabled/
 disabled input layer. Typing, key/bracketed/mouse paste, sending, attachments,
