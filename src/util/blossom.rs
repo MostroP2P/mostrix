@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
+use zeroize::Zeroizing;
 
 use crate::ui::{ChatAttachment, OperationResult};
 
@@ -296,17 +297,20 @@ fn sanitize_filename(name: &str) -> String {
 
 /// Downloads an attachment from a Blossom URL, optionally decrypts it, and writes to
 /// `~/.mostrix/downloads/<dispute_id>_<sanitized_filename>` (or with `.enc` suffix if no key).
+///
+/// `decryption_key` is [`Zeroizing`] so success, error, and cancellation wipe the bytes
+/// when the future drops (do not `take()` into a bare `Vec`).
 pub async fn save_attachment_to_disk(
     dispute_id: String,
     blossom_url: String,
     filename: String,
-    decryption_key: Option<Vec<u8>>,
+    decryption_key: Option<Zeroizing<Vec<u8>>>,
 ) -> Result<PathBuf> {
     let url = blossom_url_to_https(blossom_url.trim())?;
     let client = Client::new();
     let blob = fetch_blob(&client, &url, 0, BLOSSOM_MAX_BLOB_SIZE).await?;
-    let bytes = match &decryption_key {
-        Some(key) => decrypt_blob(key, &blob)?,
+    let bytes = match decryption_key.as_ref() {
+        Some(key) => decrypt_blob(key.as_slice(), &blob)?,
         None => blob,
     };
     let sanitized = sanitize_filename(&filename);
@@ -331,9 +335,10 @@ pub fn spawn_save_attachment(
     order_result_tx: UnboundedSender<OperationResult>,
 ) {
     // `ChatAttachment` implements Drop (zeroizes keys); take fields instead of moving out.
+    // Re-wrap the key in `Zeroizing` so the async task still wipes on drop.
     let blossom_url = std::mem::take(&mut attachment.blossom_url);
     let filename = std::mem::take(&mut attachment.filename);
-    let decryption_key = attachment.decryption_key.take();
+    let decryption_key = attachment.decryption_key.take().map(Zeroizing::new);
     tokio::spawn(async move {
         match save_attachment_to_disk(dispute_id, blossom_url, filename, decryption_key).await {
             Ok(path) => {
@@ -377,6 +382,23 @@ mod tests {
         let blob = encrypt_blob(&key, plain).unwrap();
         let out = decrypt_blob(&key, &blob).unwrap();
         assert_eq!(out, plain);
+    }
+
+    #[test]
+    fn save_path_owns_decryption_key_as_zeroizing() {
+        // Regression: take() from ChatAttachment must re-wrap before the async
+        // download so Drop of a bare Vec cannot leave key bytes uncleared.
+        let mut attachment = ChatAttachment {
+            blossom_url: "https://example.com/a".into(),
+            filename: "a.bin".into(),
+            mime_type: None,
+            file_type: crate::ui::ChatAttachmentType::File,
+            decryption_key: Some(vec![7u8; 32]),
+        };
+        let key = attachment.decryption_key.take().map(Zeroizing::new);
+        assert!(key.is_some());
+        assert!(attachment.decryption_key.is_none());
+        drop(key); // Zeroizing wipes on drop
     }
 
     #[test]

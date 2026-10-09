@@ -76,6 +76,8 @@ pub struct ChatAttachment {
     pub file_type: ChatAttachmentType,
     /// When provided by the sender, used to decrypt the blob when saving.
     /// Cleared via [`Self::zeroize_secrets`] on Observer Clear / transcript replace.
+    /// Callers that `take()` this for an async task must re-wrap in
+    /// [`zeroize::Zeroizing`] before spawn (see `spawn_save_attachment`).
     pub decryption_key: Option<Vec<u8>>,
 }
 

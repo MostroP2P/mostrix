@@ -1736,7 +1736,9 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
     } else if let Tab::Admin(AdminTab::Observer) = app.active_tab {
         // Validate the Shared key (K_conv), then fetch observer chat authenticated
         // against known admin/party inner signers from taken disputes.
-        let key_str = app.observer_shared_key_input.trim().to_string();
+        // Own a Zeroizing copy in the fetch task so Clear / tab exit / role switch
+        // that wipe AppState cannot leave a bare String clone until the task ends.
+        let key_str = Zeroizing::new(app.observer_shared_key_input.trim().to_string());
         if key_str.is_empty() {
             let msg = "Shared key is required".to_string();
             app.observer_error = Some(msg.clone());
@@ -1744,7 +1746,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
             return;
         }
 
-        if crate::util::chat_utils::keys_from_shared_hex(&key_str).is_none() {
+        if crate::util::chat_utils::keys_from_shared_hex(key_str.as_str()).is_none() {
             let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
@@ -1764,7 +1766,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         let tx = ctx.order_result_tx.clone();
 
         tokio::spawn(async move {
-            match fetch_observer_chat(&client, &key_str, sign_pubkey, &known_roles).await {
+            match fetch_observer_chat(&client, key_str.as_str(), sign_pubkey, &known_roles).await {
                 Ok(messages) => {
                     let _ = tx.send(OperationResult::ObserverChatLoaded {
                         generation,
@@ -1778,6 +1780,7 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
                     });
                 }
             }
+            // `key_str` drops here (Zeroizing wipes K_conv hex).
         });
     } else if matches!(
         app.active_tab,
