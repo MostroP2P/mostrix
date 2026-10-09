@@ -48,7 +48,10 @@ fn write_osc52(
             "Terminal clipboard payload too large",
         ));
     }
-    let mut sequence = Zeroizing::new(String::from("\x1b]52;c;"));
+    const PREFIX: &str = "\x1b]52;c;";
+    let encoded_len = text.len().div_ceil(3) * 4;
+    let mut sequence = Zeroizing::new(String::with_capacity(PREFIX.len() + encoded_len + 1));
+    sequence.push_str(PREFIX);
     STANDARD.encode_string(text, &mut sequence);
     sequence.push('\x07');
     writer.write_all(sequence.as_bytes())?;
@@ -192,6 +195,32 @@ mod tests {
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || b"+/=".contains(byte)));
         assert_eq!(STANDARD.decode(encoded).unwrap(), text.as_bytes());
+    }
+
+    #[test]
+    fn osc52_preserves_wire_format_at_padding_and_size_boundaries() {
+        for length in [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            1023,
+            1024,
+            1025,
+            MAX_OSC52_BYTES - 2,
+            MAX_OSC52_BYTES - 1,
+            MAX_OSC52_BYTES,
+        ] {
+            let text = "x".repeat(length);
+            let mut writer = ClipboardWriter::default();
+            write_osc52(&mut writer, &text, true, Some("xterm")).unwrap();
+            let expected = format!("\x1b]52;c;{}\x07", STANDARD.encode(&text));
+            assert_eq!(writer.bytes, expected.as_bytes(), "payload length {length}");
+            assert!(writer.flushed);
+        }
     }
 
     #[test]
