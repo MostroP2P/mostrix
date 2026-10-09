@@ -8,16 +8,6 @@ use tui_scrollview::{ScrollView, ScrollbarVisibility};
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
-use crate::ui::constants::{
-    CHAT_COPY_HINT, CHAT_COPY_START, FOOTER_CTRL_O_SEND_FILE, FOOTER_CTRL_SHIFT_O_RETRY,
-    FOOTER_CTRL_S_SAVE_FILE, FOOTER_MYTRADES_CTRL_I_INSERT, FOOTER_MYTRADES_CTRL_K_ACTIONS,
-    FOOTER_MYTRADES_END_BOTTOM, FOOTER_MYTRADES_ENTER_SEND, FOOTER_MYTRADES_ESC_COMMAND,
-    FOOTER_MYTRADES_PASTE, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT, FOOTER_MYTRADES_SELECT_ORDER,
-    FOOTER_MYTRADES_SHIFT_C_CANCEL, FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-    FOOTER_MYTRADES_SHIFT_F_FIAT_SENT, FOOTER_MYTRADES_SHIFT_K_KCONV,
-    FOOTER_MYTRADES_SHIFT_R_RELEASE, FOOTER_MYTRADES_SHIFT_U_REFRESH, FOOTER_MYTRADES_SHIFT_V_RATE,
-    FOOTER_MYTRADES_TAB_CHAT, FOOTER_SENDING_ATTACHMENT, HELP_KEY,
-};
 use crate::ui::helpers::{
     active_order_chat_list_snapshot, count_order_attachments, format_local_timestamp,
     format_user_rating_compact, ChatScrollViewContent,
@@ -78,6 +68,82 @@ fn allocate_order_chat_vertical(main_height: u16, toast: bool) -> (u16, u16, u16
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(Span::width).sum()
+}
+
+fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for (key, label) in hints {
+        let gap = if spans.is_empty() { 0 } else { 2 };
+        let key_text = format!(" {key} ");
+        let label_text = format!(" {label}");
+        let group_width = Span::raw(&key_text).width() + Span::raw(&label_text).width();
+        if used + gap + group_width > usize::from(width) {
+            break;
+        }
+        let key_style = if spans.is_empty() {
+            Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
+        } else {
+            Style::default().fg(Color::White).bg(Color::DarkGray)
+        };
+        if gap > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            key_text,
+            key_style.add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(label_text, Style::default().fg(Color::Gray)));
+        used += gap + group_width;
+    }
+    Line::from(spans)
+}
+
+fn order_command_bar(width: u16, insert: bool) -> Line<'static> {
+    if insert {
+        shortcut_bar(
+            width,
+            &[
+                ("Enter", "Send"),
+                ("Esc", "Commands"),
+                ("Ctrl+K", "Actions"),
+                ("Ctrl+H", "Help"),
+                ("Ctrl+C", "Copy"),
+            ],
+        )
+    } else {
+        shortcut_bar(
+            width,
+            &[
+                ("i", "Write"),
+                ("Ctrl+K", "Actions"),
+                ("Ctrl+H", "Help"),
+                ("Ctrl+C", "Copy"),
+            ],
+        )
+    }
+}
+
+fn order_copy_controls(width: u16) -> Text<'static> {
+    let hints = [("↑↓", "Select"), ("Enter", "Copy"), ("Esc", "Cancel")];
+    let full = shortcut_bar(u16::MAX, &hints);
+    if full.width() <= usize::from(width) {
+        Text::from(full)
+    } else {
+        Text::from(
+            hints
+                .iter()
+                .map(|&(key, label)| {
+                    let line = shortcut_bar(width, &[(key, label)]);
+                    if line.spans.is_empty() {
+                        shortcut_bar(width, &[(key, "")])
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
 }
 
 fn truncate_to_width(s: &str, max: usize) -> String {
@@ -546,18 +612,22 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     } else {
         chunks[1]
     };
-    let copy_hint = if main_area.width < 34 {
-        "↑↓ Select\nEnter Copy\nEsc Cancel"
+    let copy_controls = if let Some(feedback) = copy_feedback {
+        Text::styled(feedback, Style::default().fg(PRIMARY_COLOR))
     } else {
-        CHAT_COPY_HINT
+        order_copy_controls(main_area.width)
     };
-    let copy_footer_height = Paragraph::new(copy_feedback.unwrap_or(copy_hint))
+    let copy_footer_height = Paragraph::new(copy_controls.clone())
         .wrap(Wrap { trim: true })
         .line_count(main_area.width.max(1))
         .min(3) as u16;
 
     let sidebar_block = Block::default()
         .title("Orders In Progress")
+        .title_bottom(shortcut_bar(
+            sidebar_area.width.saturating_sub(2),
+            &[("↑↓", "Orders")],
+        ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -585,7 +655,10 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             ),
             empty_main_chunks[0],
         );
-        f.render_widget(Paragraph::new(HELP_KEY), empty_main_chunks[1]);
+        f.render_widget(
+            Paragraph::new(shortcut_bar(main_area.width, &[("Ctrl+H", "Help")])),
+            empty_main_chunks[1],
+        );
         return;
     }
 
@@ -755,55 +828,36 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     };
 
     let toast_extra = u16::from(app.attachment_toast.is_some());
-    let spare_below_header_input = main_area
-        .height
-        .saturating_sub(header_height.saturating_add(input_height));
-    // Grow footer only when the comfort chat reserve still fits; never reintroduce
-    // a hint row that was dropped to keep one chat body row.
     let footer_height: u16 = if copy_context {
         copy_footer_height
-    } else if reserved_footer == 0 {
-        0
-    } else if spare_below_header_input >= 3 + ORDER_INFO_CHAT_COMFORT + toast_extra {
-        3 + toast_extra
-    } else if spare_below_header_input >= 2 + ORDER_INFO_CHAT_COMFORT + toast_extra {
-        2 + toast_extra
     } else {
         reserved_footer
     };
-    let can_fit_three_line_footer = footer_height.saturating_sub(toast_extra) >= 3;
-    let can_fit_two_line_footer = footer_height.saturating_sub(toast_extra) >= 2;
+    let hint_height = footer_height.saturating_sub(toast_extra);
 
     let file_count = if active_channel == UserChatChannel::Peer {
         count_order_attachments(app, &selected.order_id)
     } else {
         0
     };
-    let mut attach_hints = if active_channel == UserChatChannel::Peer {
-        FOOTER_CTRL_O_SEND_FILE.to_string()
-    } else {
-        String::new()
-    };
-    if file_count > 0 {
-        attach_hints.push_str(FOOTER_CTRL_S_SAVE_FILE);
-    }
+    let mut chat_hints = Vec::new();
     if active_channel == UserChatChannel::Peer
         && app
             .pending_order_attachment_sends
             .contains_key(&selected.order_id)
     {
-        attach_hints.push_str(FOOTER_CTRL_SHIFT_O_RETRY);
-    }
-    if active_channel == UserChatChannel::Peer
-        && app.sending_attachment_order_id.as_deref() == Some(selected.order_id.as_str())
-    {
-        attach_hints.push_str(FOOTER_SENDING_ATTACHMENT);
+        chat_hints.push(("Ctrl+Shift+O", "Retry"));
     }
     if solver_available {
-        attach_hints.push_str(" | ");
-        attach_hints.push_str(FOOTER_MYTRADES_TAB_CHAT);
+        chat_hints.push(("Tab", "Peer/Solver"));
     }
-    let attach_hints = attach_hints.as_str();
+    if file_count > 0 {
+        chat_hints.push(("Ctrl+S", "Save file"));
+    }
+    if active_channel == UserChatChannel::Peer {
+        chat_hints.push(("Ctrl+O", "Send file"));
+    }
+    chat_hints.push(("PgUp/PgDn", "Scroll"));
 
     let main_chunks = Layout::new(
         Direction::Vertical,
@@ -839,10 +893,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     .cloned()
     .unwrap_or_default();
     let message_count = chat_messages.len();
-    let chat_title = if copy_selection.is_some() {
+    let mut chat_title = if copy_selection.is_some() {
         format!("Copy: {active_channel}")
-    } else if app.mode.user_my_trades_interactive() && main_area.width < 50 && footer_height == 0 {
-        format!("{active_channel} Chat | {CHAT_COPY_START}")
     } else if message_count > 0 {
         if file_count > 0 {
             format!(
@@ -855,9 +907,30 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     } else {
         format!("{} Chat (no messages)", active_channel)
     };
+    if !copy_context
+        && active_channel == UserChatChannel::Peer
+        && app.sending_attachment_order_id.as_deref() == Some(selected.order_id.as_str())
+    {
+        chat_title = format!("{active_channel} Chat / Sending file...");
+    }
     let chat_area = main_chunks[1];
+    let chat_border_hints = if copy_context {
+        Line::default()
+    } else if hint_height == 0 {
+        shortcut_bar(
+            chat_area.width.saturating_sub(2),
+            &[
+                ("Ctrl+K", "Actions"),
+                ("Ctrl+H", "Help"),
+                ("Ctrl+C", "Copy"),
+            ],
+        )
+    } else {
+        shortcut_bar(chat_area.width.saturating_sub(2), &chat_hints)
+    };
     let chat_block = Block::default()
         .title(chat_title)
+        .title_bottom(chat_border_hints)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -920,18 +993,24 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         if input_width < 36 {
             "INSERT · Esc"
         } else {
-            "Message  INSERT  Esc commands · Ctrl+V paste"
+            "Message / INSERT"
         }
     } else if input_width < 36 {
         "COMMAND · i"
     } else {
-        "Message  COMMAND  i or Ctrl+I to type"
+        "Message / COMMAND"
     };
-    let input_block = Block::default()
+    let mut input_block = Block::default()
         .title(input_title)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR));
+    if !copy_context && hint_height == 0 {
+        input_block = input_block.title_bottom(order_command_bar(
+            input_width.saturating_sub(2),
+            app.order_chat_input_enabled,
+        ));
+    }
     let visible_input = trailing_order_chat_input(
         &app.order_chat_input,
         input_block.inner(main_chunks[2]).width,
@@ -950,169 +1029,32 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
 
     if copy_context {
         f.render_widget(
-            Paragraph::new(copy_feedback.unwrap_or(copy_hint))
-                .style(Style::default().fg(PRIMARY_COLOR))
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(copy_controls).wrap(Wrap { trim: true }),
             main_chunks[3],
         );
         return;
     }
 
     if footer_height > 0 {
-        // Footer: one Paragraph over the full footer rect so `wrap` can use every reserved row.
         let footer_area = main_chunks[3];
-        let footer_width = footer_area.width;
-        let base_footer_lines: u16 = if footer_width < 50 {
-            1
-        } else if can_fit_three_line_footer {
-            3
-        } else if can_fit_two_line_footer {
-            2
-        } else {
-            1
-        };
-        let has_toast = app.attachment_toast.is_some();
-        let hint_lines = base_footer_lines;
-
-        let mut footer_body: Text<'static> = if footer_width < 50 {
-            Text::raw(format!("{HELP_KEY}{attach_hints}"))
-        } else if hint_lines >= 3 {
-            if app.order_chat_input_enabled {
-                Text::from(vec![
-                    Line::from(format!(
-                        "{} | {} | {} | {} | {}",
-                        HELP_KEY,
-                        FOOTER_MYTRADES_SELECT_ORDER,
-                        FOOTER_MYTRADES_ENTER_SEND,
-                        FOOTER_MYTRADES_ESC_COMMAND,
-                        FOOTER_MYTRADES_CTRL_K_ACTIONS,
-                    )),
-                    Line::from(format!(
-                        "{} | {} | {}",
-                        FOOTER_MYTRADES_PASTE,
-                        FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                        FOOTER_MYTRADES_END_BOTTOM,
-                    )),
-                    // INSERT: Shift+V / Shift+K type letters — do not advertise them here.
-                    Line::from(attach_hints.trim_start_matches(" | ").to_string()),
-                ])
-            } else {
-                Text::from(vec![
-                    Line::from(format!(
-                        "{} | {} | {} | {}",
-                        HELP_KEY,
-                        FOOTER_MYTRADES_SELECT_ORDER,
-                        FOOTER_MYTRADES_CTRL_I_INSERT,
-                        FOOTER_MYTRADES_CTRL_K_ACTIONS,
-                    )),
-                    Line::from(format!(
-                        "{} | {} | {} | {}",
-                        FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                        FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                        FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                        FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                    )),
-                    Line::from(format!(
-                        "{} | {} | {} | {} | {}{}",
-                        FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT,
-                        FOOTER_MYTRADES_END_BOTTOM,
-                        FOOTER_MYTRADES_SHIFT_U_REFRESH,
-                        FOOTER_MYTRADES_SHIFT_V_RATE,
-                        FOOTER_MYTRADES_SHIFT_K_KCONV,
-                        attach_hints,
-                    )),
-                ])
-            }
-        } else if hint_lines >= 2 {
-            if app.order_chat_input_enabled {
-                Text::from(vec![
-                    Line::from(format!(
-                        "{} | {} | {} | {} | {}",
-                        HELP_KEY,
-                        FOOTER_MYTRADES_SELECT_ORDER,
-                        FOOTER_MYTRADES_ENTER_SEND,
-                        FOOTER_MYTRADES_ESC_COMMAND,
-                        FOOTER_MYTRADES_CTRL_K_ACTIONS,
-                    )),
-                    Line::from(format!(
-                        "{} | {}{}",
-                        FOOTER_MYTRADES_PASTE, FOOTER_MYTRADES_PGUP_PGDN_SCROLL_CHAT, attach_hints,
-                    )),
-                ])
-            } else {
-                Text::from(vec![
-                    Line::from(format!(
-                        "{} | {} | {} | {} | {}",
-                        HELP_KEY,
-                        FOOTER_MYTRADES_SELECT_ORDER,
-                        FOOTER_MYTRADES_CTRL_I_INSERT,
-                        FOOTER_MYTRADES_CTRL_K_ACTIONS,
-                        FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    )),
-                    Line::from(format!(
-                        "{} | {} | {} | {} | {}{}",
-                        FOOTER_MYTRADES_SHIFT_D_DISPUTE,
-                        FOOTER_MYTRADES_SHIFT_F_FIAT_SENT,
-                        FOOTER_MYTRADES_SHIFT_R_RELEASE,
-                        FOOTER_MYTRADES_SHIFT_U_REFRESH,
-                        FOOTER_MYTRADES_SHIFT_V_RATE,
-                        attach_hints,
-                    )),
-                ])
-            }
-        } else {
-            let base = if app.order_chat_input_enabled {
-                format!(
-                    "{} | {} | {} | {} | {}",
-                    HELP_KEY,
-                    FOOTER_MYTRADES_SELECT_ORDER,
-                    FOOTER_MYTRADES_ENTER_SEND,
-                    FOOTER_MYTRADES_ESC_COMMAND,
-                    FOOTER_MYTRADES_CTRL_K_ACTIONS,
-                )
-            } else {
-                format!(
-                    "{} | {} | {} | {} | {} | {}",
-                    HELP_KEY,
-                    FOOTER_MYTRADES_SELECT_ORDER,
-                    FOOTER_MYTRADES_CTRL_I_INSERT,
-                    FOOTER_MYTRADES_CTRL_K_ACTIONS,
-                    FOOTER_MYTRADES_SHIFT_C_CANCEL,
-                    FOOTER_MYTRADES_SHIFT_U_REFRESH,
-                )
-            };
-            Text::raw(format!("{base}{attach_hints}"))
-        };
-
-        if app.mode.user_my_trades_interactive() {
-            if let Some(first) = footer_body.lines.first_mut() {
-                first
-                    .spans
-                    .insert(0, Span::raw(format!("{CHAT_COPY_START} | ")));
-            }
-        }
-
-        if has_toast {
-            let chunks = Layout::new(
-                Direction::Vertical,
-                [Constraint::Length(1), Constraint::Length(hint_lines.max(1))],
-            )
-            .split(footer_area);
-            let (toast_msg, _) = app.attachment_toast.as_ref().unwrap();
+        if let Some((toast_msg, _)) = app.attachment_toast.as_ref() {
             f.render_widget(
                 Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
-                chunks[0],
-            );
-            f.render_widget(
-                Paragraph::new(footer_body).wrap(Wrap { trim: true }),
-                chunks[1],
-            );
-        } else {
-            f.render_widget(
-                Paragraph::new(footer_body).wrap(Wrap { trim: true }),
-                footer_area,
+                Rect::new(footer_area.x, footer_area.y, footer_area.width, 1),
             );
         }
+        f.render_widget(
+            Paragraph::new(order_command_bar(
+                footer_area.width,
+                app.order_chat_input_enabled,
+            )),
+            Rect::new(
+                footer_area.x,
+                footer_area.y.saturating_add(toast_extra),
+                footer_area.width,
+                hint_height,
+            ),
+        );
     }
 }
 
@@ -1160,6 +1102,7 @@ mod tests {
     use ratatui::text::Span;
     use ratatui::Terminal;
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
     use uuid::Uuid;
 
     fn begin_copy(app: &mut AppState) {
@@ -1168,6 +1111,127 @@ mod tests {
             &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
             |_| false
         ));
+    }
+
+    #[test]
+    fn shortcut_bar_keeps_complete_groups_within_display_width() {
+        let hints = [("i", "Write"), ("Ctrl+K", "Actions"), ("Ctrl+H", "Help")];
+        for width in 0..120 {
+            let line = super::shortcut_bar(width, &hints);
+            assert!(line.width() <= usize::from(width));
+            let text = line.to_string();
+            assert_eq!(text.contains("Ctrl+K"), text.contains("Actions"));
+            assert_eq!(text.contains("Ctrl+H"), text.contains("Help"));
+        }
+        assert_eq!(super::shortcut_bar(9, &hints).to_string(), " i  Write");
+        assert!(super::shortcut_bar(8, &hints).spans.is_empty());
+        let line = super::shortcut_bar(80, &hints);
+        assert_eq!(line.spans[0].style.bg, Some(PRIMARY_COLOR));
+        assert_eq!(
+            line.spans[3].style.bg,
+            Some(ratatui::style::Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn command_bar_and_copy_controls_fit_narrow_widths() {
+        for width in 0..120 {
+            for insert in [false, true] {
+                let line = super::order_command_bar(width, insert);
+                assert!(line.width() <= usize::from(width));
+                let text = line.to_string();
+                assert!(!text.contains("Shift+"));
+                if width >= 28 {
+                    assert!(text.contains(if insert { "Commands" } else { "Actions" }));
+                }
+            }
+            let controls = super::order_copy_controls(width);
+            assert!(controls
+                .lines
+                .iter()
+                .all(|line| line.width() <= usize::from(width)));
+            if width >= 14 {
+                let text = controls.to_string();
+                for label in ["Select", "Copy", "Cancel"] {
+                    assert!(text.contains(label), "missing {label} at width {width}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn command_bar_full_shell_preserves_chat_draft_and_toast_on_resize() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            for insert in [false, true] {
+                for toast in [false, true] {
+                    let mut app = chat_copy::tests::app_with_order_messages(channel);
+                    app.order_chat_input_enabled = insert;
+                    let chats = if channel == UserChatChannel::Peer {
+                        &mut app.order_chats
+                    } else {
+                        &mut app.user_dispute_chats
+                    };
+                    for message in chats.get_mut(&Uuid::nil().to_string()).unwrap() {
+                        message.content = "hello".into();
+                    }
+                    if toast {
+                        app.attachment_toast = Some(("File saved".into(), Instant::now()));
+                    }
+                    let orders = Arc::new(Mutex::new(Vec::new()));
+                    let disputes = Arc::new(Mutex::new(Vec::new()));
+                    let status = ["ready".into(), "connected".into(), "online".into()];
+                    for (width, height) in [(120, 28), (80, 24), (60, 15), (30, 8)] {
+                        app.order_chat_scrollview_state.scroll_to_bottom();
+                        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                        terminal
+                            .draw(|frame| {
+                                ui_draw(frame, &mut app, &orders, &disputes, Some(&status));
+                            })
+                            .unwrap();
+                        let buffer = terminal.backend().buffer();
+                        if width >= 60 {
+                            for label in [
+                                "hello",
+                                "Actions",
+                                if insert { "INSERT" } else { "COMMAND" },
+                            ] {
+                                assert!(
+                                    buffer_contains(buffer, label),
+                                    "missing {label} at {width}x{height}"
+                                );
+                            }
+                            if toast {
+                                assert!(buffer_contains(buffer, "File saved"));
+                            }
+                        }
+                        if channel == UserChatChannel::Solver {
+                            assert!(!buffer_contains(buffer, "Ctrl+O"));
+                        }
+                        assert_eq!(app.order_chat_input, "draft\n  untouched");
+                        assert_eq!(app.order_chat_draft_owner, Some((Uuid::nil(), channel)));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn attachment_and_channel_hints_stay_on_the_chat_border() {
+        for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
+            let mut app = chat_copy::tests::app_with_order_messages(channel);
+            let buffer = render_copy(&mut app, 120, 28);
+            assert_eq!(
+                buffer_contains(&buffer, "Ctrl+O"),
+                channel == UserChatChannel::Peer
+            );
+            if channel == UserChatChannel::Solver {
+                assert!(buffer_contains(&buffer, "Peer/Solver"));
+            } else {
+                app.sending_attachment_order_id = Some(Uuid::nil().to_string());
+                let buffer = render_copy(&mut app, 60, 15);
+                assert!(buffer_contains(&buffer, "Sending file..."));
+            }
+        }
     }
 
     fn render_copy(app: &mut AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
@@ -1722,7 +1786,7 @@ mod tests {
     }
 
     #[test]
-    fn render_footer_lists_dispute_shortcut_next_to_cancel() {
+    fn render_footer_shows_primary_actions_on_one_row() {
         let order_id = Uuid::nil().to_string();
         let mut app = AppState::new(UserRole::User);
         app.mode = UiMode::UserMode(UserMode::Normal);
@@ -1749,14 +1813,29 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
 
-        assert!(buffer_contains(
-            buffer,
-            "Shift+C: Cancel order | Shift+D: Dispute"
-        ));
-        assert!(
-            buffer_contains(buffer, "Shift+U: Refresh"),
-            "Shift+U missing from Order Chat footer hints"
-        );
+        let footer: String = (26..120)
+            .map(|column| buffer[(column, 23)].symbol())
+            .collect();
+        for label in ["Write", "Actions", "Help", "Copy"] {
+            assert!(footer.contains(label), "missing {label}: {footer}");
+        }
+        assert!(!buffer_contains(buffer, "Shift+C:"));
+        assert!(!buffer_contains(buffer, "Shift+D:"));
+        assert!(buffer_contains(buffer, "Message / COMMAND"));
+
+        app.order_chat_input_enabled = true;
+        terminal
+            .draw(|frame| render_order_in_progress(frame, frame.area(), &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let footer: String = (26..120)
+            .map(|column| buffer[(column, 23)].symbol())
+            .collect();
+        for label in ["Send", "Commands", "Actions", "Help", "Copy"] {
+            assert!(footer.contains(label), "missing {label}: {footer}");
+        }
+        assert!(!footer.contains("Write"));
+        assert!(buffer_contains(buffer, "Message / INSERT"));
     }
 
     #[test]
