@@ -1,10 +1,11 @@
 //! My Trades / order chat UI.
 //!
-//! Shortcut hints use a one-row keycap command bar (INSERT / COMMAND) with
-//! channel and file hints on the chat border; oversized keycap groups are
-//! skipped so later shortcuts can still fit. Trade actions stay in Ctrl+K
-//! (letter selects, Enter confirms). Ctrl+H and Shift+H help overlays are
-//! styled in [`crate::ui::help_popup`].
+//! Shortcut hints use a one-row keycap command bar (INSERT / COMMAND). Channel /
+//! file / retry controls use wrapping keycap rows (compact labels when narrow)
+//! so every applicable action stays discoverable at supported full-shell sizes
+//! (including 60×15). Trade actions stay in Ctrl+K (letter selects, Enter
+//! confirms). Ctrl+H and Shift+H help overlays are styled in
+//! [`crate::ui::help_popup`].
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,7 +17,7 @@ use uuid::Uuid;
 
 use crate::ui::helpers::{
     active_order_chat_list_snapshot, count_order_attachments, format_local_timestamp,
-    format_user_rating_compact, ChatScrollViewContent,
+    format_user_rating_compact, shortcut_bar_rows, ChatScrollViewContent,
 };
 use crate::ui::key_handler::chat_copy;
 use crate::ui::UserOrderChatMessage;
@@ -107,17 +108,32 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
 }
 
 fn order_command_bar(width: u16, insert: bool) -> Line<'static> {
+    // Keep Actions early on narrow panes (60×15 main ~46 cols) so skip-fit cannot
+    // drop it behind a long "Esc Commands" group.
     if insert {
-        shortcut_bar(
-            width,
-            &[
-                ("Enter", "Send"),
-                ("Esc", "Commands"),
-                ("Ctrl+K", "Actions"),
-                ("Ctrl+H", "Help"),
-                ("Ctrl+C", "Copy"),
-            ],
-        )
+        if width < 56 {
+            shortcut_bar(
+                width,
+                &[
+                    ("Enter", "Send"),
+                    ("Ctrl+K", "Actions"),
+                    ("Esc", "Cmd"),
+                    ("Ctrl+H", "Help"),
+                    ("Ctrl+C", "Copy"),
+                ],
+            )
+        } else {
+            shortcut_bar(
+                width,
+                &[
+                    ("Enter", "Send"),
+                    ("Esc", "Commands"),
+                    ("Ctrl+K", "Actions"),
+                    ("Ctrl+H", "Help"),
+                    ("Ctrl+C", "Copy"),
+                ],
+            )
+        }
     } else {
         shortcut_bar(
             width,
@@ -847,30 +863,47 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     } else {
         0
     };
-    let mut chat_hints = Vec::new();
+    // Contextual ops (must all remain discoverable at 60×15). Compact labels when
+    // the main pane is narrow; wrapping rows pack every applicable group.
+    let compact_ctx = main_area.width < 72;
+    let mut contextual_hints: Vec<(&str, &str)> = Vec::new();
     if active_channel == UserChatChannel::Peer
         && app
             .pending_order_attachment_sends
             .contains_key(&selected.order_id)
     {
-        chat_hints.push(("Ctrl+Shift+O", "Retry"));
+        contextual_hints.push(("Ctrl+Shift+O", "Retry"));
     }
     if solver_available {
-        chat_hints.push(("Tab", "Peer/Solver"));
+        contextual_hints.push(("Tab", if compact_ctx { "Peer" } else { "Peer/Solver" }));
     }
     if file_count > 0 {
-        chat_hints.push(("Ctrl+S", "Save file"));
+        contextual_hints.push(("Ctrl+S", if compact_ctx { "Save" } else { "Save file" }));
     }
     if active_channel == UserChatChannel::Peer {
-        chat_hints.push(("Ctrl+O", "Send file"));
+        contextual_hints.push(("Ctrl+O", if compact_ctx { "Send" } else { "Send file" }));
     }
-    chat_hints.push(("PgUp/PgDn", "Scroll"));
+    let hint_strip_width = main_area.width.saturating_sub(2).max(1);
+    let contextual_text = if copy_context || contextual_hints.is_empty() {
+        Text::default()
+    } else {
+        shortcut_bar_rows(hint_strip_width, &contextual_hints)
+    };
+    // One row → chat title_bottom (no vertical cost). Multi-row → dedicated strip
+    // taken from the header budget so chat content stays visible at 60×15.
+    let contextual_rows = if contextual_text.lines.len() > 1 {
+        contextual_text.lines.len() as u16
+    } else {
+        0
+    };
+    let header_height = header_height.saturating_sub(contextual_rows);
 
     let main_chunks = Layout::new(
         Direction::Vertical,
         [
             Constraint::Length(header_height),
             Constraint::Min(0),
+            Constraint::Length(contextual_rows),
             Constraint::Length(input_height),
             Constraint::Length(footer_height),
         ],
@@ -921,42 +954,30 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         chat_title = format!("{active_channel} Chat / Sending file...");
     }
     let chat_area = main_chunks[1];
-    let chat_border_hints = if copy_context {
+    let chat_border_bottom = if copy_context {
         Line::default()
-    } else if hint_height == 0 {
-        // Compact fallback: lead with one live contextual action (Tab/Retry/
-        // Save/Send), then chrome, then any remaining contextual. Chrome-first
-        // left no contextual room at short full-shell widths; all-contextual-
-        // first can push Actions off a narrow chat pane (~60x15 half width).
-        let contextual: Vec<_> = chat_hints
-            .iter()
-            .copied()
-            .filter(|(key, _)| matches!(*key, "Tab" | "Ctrl+S" | "Ctrl+O" | "Ctrl+Shift+O"))
-            .collect();
-        let mut compact = Vec::new();
-        let mut contextual = contextual.into_iter();
-        if let Some(first) = contextual.next() {
-            compact.push(first);
-        }
-        compact.extend([
-            ("Ctrl+K", "Actions"),
-            ("Ctrl+H", "Help"),
-            ("Ctrl+C", "Copy"),
-        ]);
-        compact.extend(contextual);
-        shortcut_bar(chat_area.width.saturating_sub(2), &compact)
+    } else if contextual_rows == 0 && !contextual_hints.is_empty() {
+        // Single packed contextual row lives on the chat border (no extra height).
+        shortcut_bar(chat_area.width.saturating_sub(2), &contextual_hints)
     } else {
-        shortcut_bar(chat_area.width.saturating_sub(2), &chat_hints)
+        shortcut_bar(
+            chat_area.width.saturating_sub(2),
+            &[("PgUp/PgDn", "Scroll")],
+        )
     };
     let chat_block = Block::default()
         .title(chat_title)
-        .title_bottom(chat_border_hints)
+        .title_bottom(chat_border_bottom)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
         .style(Style::default().bg(BACKGROUND_COLOR));
     let chat_inner = chat_block.inner(chat_area);
     f.render_widget(chat_block, chat_area);
+
+    if contextual_rows > 0 {
+        f.render_widget(Paragraph::new(contextual_text), main_chunks[2]);
+    }
 
     // Match disputes/observer chat: content width reserves one column for the vertical scrollbar.
     let content_width = chat_inner.width.saturating_sub(1).max(1);
@@ -1006,7 +1027,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let input_active = app.mode.user_my_trades_interactive()
         && app.order_chat_input_enabled
         && copy_selection.is_none();
-    let input_width = main_chunks[2].width;
+    let input_area = main_chunks[3];
+    let input_width = input_area.width;
     let input_title = if copy_selection.is_some() {
         "Message (copying)"
     } else if app.order_chat_input_enabled {
@@ -1031,10 +1053,8 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             app.order_chat_input_enabled,
         ));
     }
-    let visible_input = trailing_order_chat_input(
-        &app.order_chat_input,
-        input_block.inner(main_chunks[2]).width,
-    );
+    let visible_input =
+        trailing_order_chat_input(&app.order_chat_input, input_block.inner(input_area).width);
     f.render_widget(
         Paragraph::new(visible_input)
             .wrap(Wrap { trim: false })
@@ -1044,19 +1064,19 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                 Style::default().fg(Color::DarkGray)
             })
             .block(input_block),
-        main_chunks[2],
+        input_area,
     );
 
     if copy_context {
         f.render_widget(
             Paragraph::new(copy_controls).wrap(Wrap { trim: true }),
-            main_chunks[3],
+            main_chunks[4],
         );
         return;
     }
 
     if footer_height > 0 {
-        let footer_area = main_chunks[3];
+        let footer_area = main_chunks[4];
         if let Some((toast_msg, _)) = app.attachment_toast.as_ref() {
             f.render_widget(
                 Paragraph::new(toast_msg.as_str()).style(Style::default().fg(Color::Yellow)),
@@ -1162,7 +1182,16 @@ mod tests {
                 let text = line.to_string();
                 assert!(!text.contains("Shift+"));
                 if width >= 28 {
-                    assert!(text.contains(if insert { "Commands" } else { "Actions" }));
+                    if insert {
+                        assert!(
+                            text.contains("Commands")
+                                || text.contains("Cmd")
+                                || text.contains("Actions"),
+                            "INSERT bar missing Commands/Cmd/Actions at width {width}: {text}"
+                        );
+                    } else {
+                        assert!(text.contains("Actions"));
+                    }
                 }
             }
             let controls = super::order_copy_controls(width);
@@ -1235,35 +1264,129 @@ mod tests {
         }
     }
 
-    #[test]
-    fn zero_row_compact_border_keeps_a_contextual_action() {
-        // Short full-shell widths leave hint_height == 0. Lead with one
-        // contextual hint, then chrome — width ~34 must still show a trade action.
-        let contextual = [
-            ("Tab", "Peer/Solver"),
-            ("Ctrl+S", "Save file"),
-            ("Ctrl+O", "Send file"),
-        ];
-        let mut compact = vec![contextual[0]];
-        compact.extend([
-            ("Ctrl+K", "Actions"),
-            ("Ctrl+H", "Help"),
-            ("Ctrl+C", "Copy"),
-        ]);
-        compact.extend(contextual[1..].iter().copied());
-        let line = super::shortcut_bar(34, &compact);
-        let text = line.to_string();
-        assert!(
-            text.contains("Peer")
-                || text.contains("Tab")
-                || text.contains("Save")
-                || text.contains("Send"),
-            "expected a contextual action at width 34, got: {text}"
+    fn render_full_shell(app: &mut AppState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let disputes = Arc::new(Mutex::new(Vec::new()));
+        let status = ["ready".into(), "connected".into(), "online".into()];
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                ui_draw(frame, app, &orders, &disputes, Some(&status));
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn with_peer_attachment(app: &mut AppState) {
+        use crate::ui::{ChatAttachment, ChatAttachmentType, UserChatSender, UserOrderChatMessage};
+        let order_id = Uuid::nil().to_string();
+        app.order_chats
+            .entry(order_id)
+            .or_default()
+            .push(UserOrderChatMessage {
+                sender: UserChatSender::Peer,
+                content: "📎 File: proof.bin".into(),
+                timestamp: 2,
+                attachment: Some(ChatAttachment {
+                    blossom_url: "https://example.com/a".into(),
+                    filename: "proof.bin".into(),
+                    mime_type: None,
+                    file_type: ChatAttachmentType::File,
+                    decryption_key: None,
+                }),
+            });
+    }
+
+    fn with_pending_retry(app: &mut AppState) {
+        use crate::ui::helpers::{OutboundAttachmentPayload, PreparedOrderChatAttachment};
+        use crate::ui::{ChatAttachment, ChatAttachmentType};
+        let order_id = Uuid::nil().to_string();
+        app.pending_order_attachment_sends.insert(
+            order_id.clone(),
+            PreparedOrderChatAttachment {
+                order_id,
+                blossom_url: "https://example.com/a".into(),
+                filename: "x.bin".into(),
+                outbound: OutboundAttachmentPayload {
+                    json_body: "{}".into(),
+                    attachment: ChatAttachment {
+                        blossom_url: "https://example.com/a".into(),
+                        filename: "x.bin".into(),
+                        mime_type: None,
+                        file_type: ChatAttachmentType::File,
+                        decryption_key: None,
+                    },
+                    display_content: "file".into(),
+                },
+            },
         );
     }
 
     #[test]
-    fn attachment_and_channel_hints_stay_on_the_chat_border() {
+    fn full_shell_60x15_shows_peer_solver_tab_hint() {
+        let mut app = chat_copy::tests::app_with_order_messages(UserChatChannel::Peer);
+        let buf = render_full_shell(&mut app, 60, 15);
+        assert!(
+            buffer_contains(&buf, "Tab") && buffer_contains(&buf, "Peer"),
+            "Peer/Solver channel toggle must stay discoverable at 60x15"
+        );
+    }
+
+    #[test]
+    fn full_shell_60x15_shows_send_file_on_peer() {
+        let mut app = chat_copy::tests::app_with_order_messages(UserChatChannel::Peer);
+        let buf = render_full_shell(&mut app, 60, 15);
+        assert!(
+            buffer_contains(&buf, "Ctrl+O") && buffer_contains(&buf, "Send"),
+            "Send file must stay discoverable on Peer at 60x15"
+        );
+    }
+
+    #[test]
+    fn full_shell_60x15_shows_save_when_attachment_present() {
+        let mut app = chat_copy::tests::app_with_order_messages(UserChatChannel::Peer);
+        with_peer_attachment(&mut app);
+        let buf = render_full_shell(&mut app, 60, 15);
+        assert!(
+            buffer_contains(&buf, "Ctrl+S") && buffer_contains(&buf, "Save"),
+            "Save must stay discoverable when attachments exist at 60x15"
+        );
+        assert!(
+            buffer_contains(&buf, "Ctrl+O") && buffer_contains(&buf, "Send"),
+            "Send must remain discoverable alongside Save at 60x15"
+        );
+        assert!(
+            buffer_contains(&buf, "Tab") && buffer_contains(&buf, "Peer"),
+            "channel toggle must remain discoverable alongside Save at 60x15"
+        );
+    }
+
+    #[test]
+    fn full_shell_60x15_shows_retry_when_pending() {
+        let mut app = chat_copy::tests::app_with_order_messages(UserChatChannel::Peer);
+        with_pending_retry(&mut app);
+        with_peer_attachment(&mut app);
+        let buf = render_full_shell(&mut app, 60, 15);
+        assert!(
+            buffer_contains(&buf, "Ctrl+Shift+O") && buffer_contains(&buf, "Retry"),
+            "Retry must stay discoverable when a pending send exists at 60x15"
+        );
+        assert!(
+            buffer_contains(&buf, "Ctrl+S") && buffer_contains(&buf, "Save"),
+            "Save must remain with Retry at 60x15"
+        );
+        assert!(
+            buffer_contains(&buf, "Ctrl+O") && buffer_contains(&buf, "Send"),
+            "Send must remain with Retry at 60x15"
+        );
+        assert!(
+            buffer_contains(&buf, "Tab") && buffer_contains(&buf, "Peer"),
+            "channel toggle must remain with Retry at 60x15"
+        );
+    }
+
+    #[test]
+    fn attachment_and_channel_hints_stay_discoverable() {
         for channel in [UserChatChannel::Peer, UserChatChannel::Solver] {
             let mut app = chat_copy::tests::app_with_order_messages(channel);
             let buffer = render_copy(&mut app, 120, 28);
@@ -1272,7 +1395,9 @@ mod tests {
                 channel == UserChatChannel::Peer
             );
             if channel == UserChatChannel::Solver {
-                assert!(buffer_contains(&buffer, "Peer/Solver"));
+                assert!(
+                    buffer_contains(&buffer, "Peer/Solver") || buffer_contains(&buffer, "Peer")
+                );
             } else {
                 app.sending_attachment_order_id = Some(Uuid::nil().to_string());
                 let buffer = render_copy(&mut app, 60, 15);

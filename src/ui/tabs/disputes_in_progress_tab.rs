@@ -110,6 +110,7 @@ fn dispute_command_bar(
     is_finalized: bool,
     managing: bool,
     serbero: bool,
+    show_save: bool,
 ) -> Line<'static> {
     if is_finalized {
         return shortcut_bar(
@@ -132,27 +133,56 @@ fn dispute_command_bar(
             ],
         );
     }
+    // When an attachment is selected, surface Save on the command bar too so
+    // short full-shell layouts still advertise Ctrl+S (Actions has no Save).
     if managing && input_enabled {
-        shortcut_bar(
-            width,
-            &[
-                ("Enter", "Send"),
-                ("Esc", "Commands"),
-                ("Ctrl+K", "Actions"),
-                ("Ctrl+H", "Help"),
-                ("Ctrl+C", "Copy"),
-            ],
-        )
+        if show_save {
+            shortcut_bar(
+                width,
+                &[
+                    ("Enter", "Send"),
+                    ("Esc", "Commands"),
+                    ("Ctrl+S", "Save"),
+                    ("Ctrl+K", "Actions"),
+                    ("Ctrl+H", "Help"),
+                    ("Ctrl+C", "Copy"),
+                ],
+            )
+        } else {
+            shortcut_bar(
+                width,
+                &[
+                    ("Enter", "Send"),
+                    ("Esc", "Commands"),
+                    ("Ctrl+K", "Actions"),
+                    ("Ctrl+H", "Help"),
+                    ("Ctrl+C", "Copy"),
+                ],
+            )
+        }
     } else if managing {
-        shortcut_bar(
-            width,
-            &[
-                ("i", "Write"),
-                ("Ctrl+K", "Actions"),
-                ("Ctrl+H", "Help"),
-                ("Ctrl+C", "Copy"),
-            ],
-        )
+        if show_save {
+            shortcut_bar(
+                width,
+                &[
+                    ("i", "Write"),
+                    ("Ctrl+S", "Save"),
+                    ("Ctrl+K", "Actions"),
+                    ("Ctrl+H", "Help"),
+                    ("Ctrl+C", "Copy"),
+                ],
+            )
+        } else {
+            shortcut_bar(
+                width,
+                &[
+                    ("i", "Write"),
+                    ("Ctrl+K", "Actions"),
+                    ("Ctrl+H", "Help"),
+                    ("Ctrl+C", "Copy"),
+                ],
+            )
+        }
     } else {
         shortcut_bar(
             width,
@@ -188,8 +218,14 @@ fn dispute_copy_controls(width: u16) -> Text<'static> {
     }
 }
 
-/// Short Shift+C filter target for the chat-border keycap (`Finalized` / `In progress`).
-fn filter_hint_label(filter: DisputeFilter) -> &'static str {
+/// Short Shift+C filter target for the chat-border keycap.
+///
+/// Wide panes show the destination filter name; narrow panes use `Filter` so
+/// `Ctrl+S Save` stays discoverable when an attachment is selected.
+fn filter_hint_label(filter: DisputeFilter, compact: bool) -> &'static str {
+    if compact {
+        return "Filter";
+    }
     match filter {
         DisputeFilter::InProgress => "Finalized",
         DisputeFilter::Finalized => "In progress",
@@ -358,6 +394,11 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
             let mut header_height = 7;
             let mut party_height = 3;
+            // Shrink chrome on short full-shell heights (e.g. 60×15) so the chat
+            // pane (and Save/Party border hints) keep a usable height.
+            let spare = main_area
+                .height
+                .saturating_sub(footer_height.saturating_add(input_height.min(3)));
             if copy_context {
                 footer_height = Paragraph::new(copy_controls.clone())
                     .wrap(Wrap { trim: true })
@@ -367,6 +408,10 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 header_height = if spare >= 10 { 7 } else { 0 };
                 party_height = if spare >= 3 { 3 } else { 0 };
                 input_height = if spare >= 13 { 3 } else { 0 };
+            } else if spare < 13 {
+                header_height = if spare >= 10 { 5 } else { 0 };
+                party_height = if spare >= 7 { 3 } else { 0 };
+                input_height = input_height.min(3);
             }
 
             Layout::new(
@@ -885,19 +930,23 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 let has_selected_attachment = get_selected_chat_message(app, dispute_id_key)
                     .and_then(|m| m.attachment.as_ref())
                     .is_some();
-                // Resolve/Recover/Filter/Remove live in Ctrl+K Actions (like My Trades).
-                let mut chat_hints = vec![
-                    ("Tab", "Party"),
-                    ("Shift+C", filter_hint_label(app.dispute_filter)),
-                ];
+                // Save before the filter label so constrained borders keep Ctrl+S
+                // discoverable (Actions has no Save). Compact labels under ~56 cols.
+                let border_w = chat_area.width.saturating_sub(2);
+                let compact_border = border_w < 56;
+                let mut chat_hints = vec![("Tab", "Party")];
                 if has_selected_attachment {
-                    chat_hints.push(("Ctrl+S", "Save file"));
+                    chat_hints.push(("Ctrl+S", if compact_border { "Save" } else { "Save file" }));
                 }
+                chat_hints.push((
+                    "Shift+C",
+                    filter_hint_label(app.dispute_filter, compact_border),
+                ));
                 chat_hints.push(("PgUp/PgDn", "Scroll"));
                 let chat_border_hints = if copy_context {
                     Line::default()
                 } else {
-                    shortcut_bar(chat_area.width.saturating_sub(2), &chat_hints)
+                    shortcut_bar(border_w, &chat_hints)
                 };
 
                 let chat_block = Block::default()
@@ -1003,6 +1052,13 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
 
         let managing = matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute));
         let serbero_active = !is_finalized && app.admin_show_solver_dms;
+        let show_save = !is_finalized
+            && !serbero_active
+            && app.selected_dispute_id.as_ref().is_some_and(|id| {
+                get_selected_chat_message(app, id)
+                    .and_then(|m| m.attachment.as_ref())
+                    .is_some()
+            });
         if !is_finalized {
             if let Some((toast_msg, _)) = app.attachment_toast.as_ref() {
                 f.render_widget(
@@ -1019,6 +1075,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                     is_finalized,
                     managing,
                     serbero_active,
+                    show_save,
                 )),
                 Rect::new(
                     footer_area.x,
@@ -1059,7 +1116,7 @@ pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut
                 inner_chunks[1].width,
                 &[
                     ("Ctrl+H", "Help"),
-                    ("Shift+C", filter_hint_label(app.dispute_filter)),
+                    ("Shift+C", filter_hint_label(app.dispute_filter, false)),
                     ("Shift+R", "Recover"),
                     ("↑↓", "Disputes"),
                 ],
@@ -1450,7 +1507,7 @@ mod tests {
     fn command_bar_and_copy_controls_fit_narrow_widths() {
         for width in 0..120 {
             for insert in [false, true] {
-                let line = super::dispute_command_bar(width, insert, false, true, false);
+                let line = super::dispute_command_bar(width, insert, false, true, false, false);
                 assert!(line.width() <= usize::from(width));
                 let text = line.to_string();
                 if width >= 28 {
@@ -1480,7 +1537,7 @@ mod tests {
         app.admin_show_solver_dms = true;
         app.admin_chat_input_enabled = true;
 
-        let line = super::dispute_command_bar(120, true, false, true, true);
+        let line = super::dispute_command_bar(120, true, false, true, true, false);
         let text = line.to_string();
         assert!(text.contains("Party"), "expected Tab Party: {text}");
         assert!(text.contains("Actions"), "expected Actions: {text}");
@@ -1573,6 +1630,52 @@ mod tests {
         assert!(
             buffer_contains(buf, "Actions"),
             "Ctrl+K Actions must remain on the command bar"
+        );
+    }
+
+    #[test]
+    fn full_shell_60x15_keeps_save_when_attachment_selected() {
+        use crate::ui::chat::{ChatAttachment, ChatAttachmentType, ChatSender, DisputeChatMessage};
+        use crate::ui::draw::ui_draw;
+        use crate::ui::{AdminTab, Tab};
+        use mostro_core::prelude::Dispute;
+        use std::sync::{Arc, Mutex};
+
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.admin_disputes_in_progress = vec![dispute("dip-save", "in-progress")];
+        app.selected_dispute_id = Some("dip-save".to_string());
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.active_chat_party = ChatParty::Buyer;
+        app.admin_dispute_chats.insert(
+            "dip-save".into(),
+            vec![DisputeChatMessage {
+                sender: ChatSender::Buyer,
+                content: "📎 File: evidence.bin".into(),
+                timestamp: 1,
+                target_party: None,
+                attachment: Some(ChatAttachment {
+                    blossom_url: "https://example.com/e".into(),
+                    filename: "evidence.bin".into(),
+                    mime_type: None,
+                    file_type: ChatAttachmentType::File,
+                    decryption_key: None,
+                }),
+            }],
+        );
+        app.admin_chat_selected_message_idx = Some(0);
+
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let disputes = Arc::new(Mutex::new(Vec::<Dispute>::new()));
+        let status = ["ready".into(), "connected".into(), "online".into()];
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).expect("terminal");
+        terminal
+            .draw(|f| ui_draw(f, &mut app, &orders, &disputes, Some(&status)))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "Ctrl+S") && buffer_contains(buf, "Save"),
+            "Save must stay discoverable when an attachment is selected at 60x15"
         );
     }
 

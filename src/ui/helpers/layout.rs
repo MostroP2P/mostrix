@@ -1,9 +1,82 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::ui::PRIMARY_COLOR;
+
+/// One high-contrast keycap row; groups that do not fit are skipped so later
+/// shorter groups can still appear (command-bar chrome).
+pub fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
+    shortcut_bar_impl(width, hints, true)
+}
+
+/// Pack **every** keycap group onto as many rows as needed (never skip).
+///
+/// Used for contextual chat-border / hint strips where Save/Send/Retry/Tab must
+/// remain discoverable at supported full-shell widths (e.g. 60×15).
+pub fn shortcut_bar_rows(width: u16, hints: &[(&str, &str)]) -> Text<'static> {
+    if hints.is_empty() {
+        return Text::default();
+    }
+    let width = width.max(1);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut row_hints: Vec<(&str, &str)> = Vec::new();
+    let mut used = 0usize;
+    for &(key, label) in hints {
+        let key_text = format!(" {key} ");
+        let label_text = format!(" {label}");
+        let group_width = Span::raw(&key_text).width() + Span::raw(&label_text).width();
+        let gap = if row_hints.is_empty() { 0 } else { 2 };
+        if !row_hints.is_empty() && used + gap + group_width > usize::from(width) {
+            lines.push(shortcut_bar_impl(width, &row_hints, false));
+            row_hints.clear();
+            used = 0;
+        }
+        let gap = if row_hints.is_empty() { 0 } else { 2 };
+        row_hints.push((key, label));
+        used += gap + group_width;
+    }
+    if !row_hints.is_empty() {
+        lines.push(shortcut_bar_impl(width, &row_hints, false));
+    }
+    Text::from(lines)
+}
+
+fn shortcut_bar_impl(width: u16, hints: &[(&str, &str)], skip_oversized: bool) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for (key, label) in hints {
+        let gap = if spans.is_empty() { 0 } else { 2 };
+        let key_text = format!(" {key} ");
+        let label_text = format!(" {label}");
+        let group_width = Span::raw(&key_text).width() + Span::raw(&label_text).width();
+        if used + gap + group_width > usize::from(width) {
+            if skip_oversized {
+                continue;
+            }
+            // Wrapping callers: allow a single oversized group on its own row.
+            if !spans.is_empty() {
+                break;
+            }
+        }
+        let key_style = if spans.is_empty() {
+            Style::default().fg(Color::Black).bg(PRIMARY_COLOR)
+        } else {
+            Style::default().fg(Color::White).bg(Color::DarkGray)
+        };
+        if gap > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            key_text,
+            key_style.add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(label_text, Style::default().fg(Color::Gray)));
+        used += gap + group_width;
+    }
+    Line::from(spans)
+}
 
 /// Vertical scrollbar for a bordered table/list whose selection scrolls with
 /// [`ratatui::widgets::TableState`] / [`ratatui::widgets::ListState`].
@@ -485,6 +558,25 @@ mod tests {
         assert!(buffer_contains(buf, "YES"));
         assert!(buffer_contains(buf, "NO"));
         assert!(buffer_contains(buf, "CANCEL"));
+    }
+
+    #[test]
+    fn shortcut_bar_rows_never_drops_a_group() {
+        let hints = [
+            ("Ctrl+Shift+O", "Retry"),
+            ("Tab", "Peer"),
+            ("Ctrl+S", "Save"),
+            ("Ctrl+O", "Send"),
+        ];
+        let text = shortcut_bar_rows(34, &hints);
+        let joined = text.to_string();
+        for label in ["Retry", "Peer", "Save", "Send"] {
+            assert!(
+                joined.contains(label),
+                "wrapping bar must keep {label} at width 34, got: {joined}"
+            );
+        }
+        assert!(text.lines.len() >= 2, "expected multiple rows at width 34");
     }
 
     #[test]

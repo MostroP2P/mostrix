@@ -1,11 +1,12 @@
 //! Observer (read-only Shared-key chat).
 //!
 //! Shortcut hints use a one-row keycap command bar (`Ctrl+L` Clear, `Ctrl+K`
-//! Actions). On narrow widths Help/Actions/Clear come first; oversized groups
-//! are skipped. Load pins `observer_loaded_shared_key` for attachment decrypt;
-//! editing the Shared key field invalidates the transcript. Esc dismisses the
-//! inline error (not a full clear). Paste/scroll sit on the chat border. The
-//! Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
+//! Actions). Widths under 65 keep Actions before Help so it stays discoverable
+//! at the supported 60-column full-shell size; under 36 Help/Actions/Clear lead.
+//! Load pins `observer_loaded_shared_key` for attachment decrypt; editing the
+//! Shared key field invalidates the transcript. Esc dismisses the inline error
+//! (not a full clear). Paste/scroll sit on the chat border. The Ctrl+H help
+//! overlay is styled in [`crate::ui::help_popup`].
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
@@ -54,6 +55,7 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
 /// Primary Observer keycap row aligned with My Trades / Disputes.
 ///
 /// `Ctrl+L` is Clear (full wipe). Widths under 36 prioritize Help/Actions/Clear.
+/// Widths under 65 put Actions before Help so Actions survives at 60 columns.
 /// Esc dismisses only the inline error and is not labeled Clear here — use
 /// Actions → Dismiss error, or Esc with no label clutter on the primary row.
 fn observer_command_bar(width: u16) -> Line<'static> {
@@ -71,7 +73,19 @@ fn observer_command_bar(width: u16) -> Line<'static> {
             ],
         );
     }
-    // Clear before Actions so mid-width terminals keep the Ctrl+L wipe discoverable.
+    // Mid widths (incl. supported 60-col full shell): Actions before Help.
+    if width < 65 {
+        return shortcut_bar(
+            width,
+            &[
+                ("Enter", "Load"),
+                ("Ctrl+L", "Clear"),
+                ("Ctrl+K", "Actions"),
+                ("Ctrl+H", "Help"),
+                ("Ctrl+C", "Copy"),
+            ],
+        );
+    }
     shortcut_bar(
         width,
         &[
@@ -604,8 +618,29 @@ mod tests {
     }
 
     #[test]
+    fn full_shell_60x15_keeps_actions_visible() {
+        let buf = render_observer(&mut AppState::new(UserRole::Admin), 60, 15);
+        assert!(
+            buffer_contains(&buf, "Actions"),
+            "Ctrl+K Actions must stay discoverable at supported 60-column width"
+        );
+        assert!(
+            buffer_contains(&buf, "Load") && buffer_contains(&buf, "Clear"),
+            "Load and Clear must remain with Actions at 60x15"
+        );
+    }
+
+    #[test]
     fn observer_command_bar_shows_primary_actions_on_one_row() {
-        for (width, height) in [(120, 24), (80, 24), (80, 12), (40, 24), (40, 12), (20, 24)] {
+        for (width, height) in [
+            (120, 24),
+            (80, 24),
+            (80, 12),
+            (60, 15),
+            (40, 24),
+            (40, 12),
+            (20, 24),
+        ] {
             let buf = render_observer(&mut AppState::new(UserRole::Admin), width, height);
             // width < 36 prioritizes Help/Actions/Clear; wider widths lead with Load.
             if width < 36 {
@@ -625,20 +660,28 @@ mod tests {
                     "Clear or Help missing at {width}x{height}"
                 );
             }
-            if width >= 45 {
+            if (45..60).contains(&width) {
                 assert!(
-                    buffer_contains(&buf, "Help"),
-                    "missing Help at {width}x{height}"
+                    buffer_contains(&buf, "Help") || buffer_contains(&buf, "Actions"),
+                    "Help or Actions missing at {width}x{height}"
                 );
+            }
+            if width >= 60 {
                 assert!(
-                    !buffer_contains(&buf, "Dismiss"),
-                    "Esc Dismiss is error-only; must not appear without an error"
+                    buffer_contains(&buf, "Actions"),
+                    "missing Actions at {width}x{height}"
                 );
             }
             if width >= 65 {
                 assert!(
-                    buffer_contains(&buf, "Actions"),
-                    "missing Actions at {width}x{height}"
+                    buffer_contains(&buf, "Help"),
+                    "missing Help at {width}x{height}"
+                );
+            }
+            if width >= 45 {
+                assert!(
+                    !buffer_contains(&buf, "Dismiss"),
+                    "Esc Dismiss is error-only; must not appear without an error"
                 );
             }
             if width >= 80 {

@@ -815,7 +815,7 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 - **Color differentiation**: Buyer (Green) and Seller (Magenta) messages clearly distinguished
 - **Message headers**: Each message displays "Sender - date - time" format with color-coded sender names (Cyan for Admin, Green for Buyer, Magenta for Seller)
 - **Clear party label**: "Chat with Buyer" or "Chat with Seller" in chat header
-- **Keycap command bar**: One-row mode-aware shortcuts (SERBERO read-only; skip-fit on narrow); contextual party/filter/file hints on the chat border (`Ctrl+S Save file` when attachments exist)
+- **Keycap command bar**: One-row mode-aware shortcuts (SERBERO read-only; skip-fit on narrow). Party/filter/file hints on the chat border; when an attachment is selected, `Ctrl+S Save` is ordered before the filter label (compact `Filter` / `Save` under ~56 cols) and also surfaces on the command bar so it survives supported 60×15 full-shell layouts
 - **Privacy icons**: 🟢 (info available) or 🔴 (private) for each party
 - **Context preservation**: Each dispute maintains its own complete message history; drafts are bound to dispute+party
 - **Visual scrollbar**: Right-side scrollbar (↑/↓/│/█) indicates scroll position in chat
