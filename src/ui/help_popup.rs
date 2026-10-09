@@ -30,6 +30,7 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
     let compact_chrome = matches!(
         tab,
         Tab::Admin(AdminTab::DisputesInProgress)
+            | Tab::Admin(AdminTab::Observer)
             | Tab::User(UserTab::Orders)
             | Tab::User(UserTab::MyTrades)
     );
@@ -96,6 +97,8 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         let mut lines: Vec<Line<'static>> = Vec::new();
         if matches!(tab, Tab::Admin(AdminTab::DisputesInProgress)) {
             lines.push(help_disputes_in_progress_intro());
+        } else if matches!(tab, Tab::Admin(AdminTab::Observer)) {
+            lines.extend(compact_observer_help(inner.width, inner.height));
         } else if compact_orders {
             lines.extend(compact_orders_help(
                 narrow_orders,
@@ -124,7 +127,12 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
                 inner.width,
                 usize::from(inner.height).saturating_sub(close_rows),
             );
-        } else if !compact_my_trades && !matches!(tab, Tab::User(UserTab::Orders)) {
+        } else if !compact_my_trades
+            && !matches!(
+                tab,
+                Tab::User(UserTab::Orders) | Tab::Admin(AdminTab::Observer)
+            )
+        {
             for s in plain_lines {
                 lines.push(help_shortcut_line(&s));
             }
@@ -296,6 +304,68 @@ fn help_my_trades_intro() -> Line<'static> {
         Span::styled("Shift+H", Style::default().fg(PRIMARY_COLOR)),
         Span::styled(" for this panel.", Style::default().fg(Color::DarkGray)),
     ])
+}
+
+fn compact_observer_help(inner_width: u16, inner_height: u16) -> Vec<Line<'static>> {
+    let width = inner_width.max(1);
+    let close_rows = wrapped_rows(&Line::raw(HELP_CLOSE_HINT), width);
+    let mut available_rows = usize::from(inner_height).saturating_sub(close_rows);
+
+    let full_lines: Vec<_> = [
+        HELP_OBS_ENTER_LOAD,
+        HELP_CHAT_COPY,
+        HELP_CHAT_COPY_KEYS,
+        HELP_OBS_CTRL_L_CLEAR,
+        HELP_OBS_CTRL_S_ATTACH,
+        HELP_OBS_ESC_CLEAR_ERR,
+        HELP_OBS_SCROLL_LINE,
+        HELP_OBS_SCROLL_PAGE,
+        HELP_OBS_PASTE_SHARED_KEY,
+    ]
+    .into_iter()
+    .map(help_shortcut_line)
+    .collect();
+    if full_lines
+        .iter()
+        .map(|line| wrapped_rows(line, width))
+        .sum::<usize>()
+        <= available_rows
+    {
+        return full_lines;
+    }
+
+    let (title_style, _) = settings_instruction_block_style();
+    // Pack essentials first so Ctrl+L / Ctrl+S / Ctrl+C survive the shortest viewports.
+    let candidate_rows: &[&str] = if width < 36 || available_rows <= 3 {
+        &[
+            "Enter Ctrl+C",
+            "Ctrl+L Ctrl+S",
+            "Copy: ↑↓ Enter Esc",
+            "↑↓ Esc",
+        ]
+    } else {
+        &[
+            "Enter: Load Shared key",
+            "Ctrl+C: Copy; Copy: ↑↓ Enter Esc",
+            "Ctrl+L: Clear all",
+            "Ctrl+S: Save attachment",
+            "Esc: Clear error",
+            "↑↓ PgUp/PgDn: Scroll",
+            HELP_OBS_PASTE_SHARED_KEY,
+        ]
+    };
+    candidate_rows
+        .iter()
+        .map(|row| Line::from(Span::styled((*row).to_string(), title_style)))
+        .take_while(|line| {
+            let rows = wrapped_rows(line, width);
+            if rows > available_rows {
+                return false;
+            }
+            available_rows -= rows;
+            true
+        })
+        .collect()
 }
 
 fn compact_my_trades_help(narrow: bool, inner_width: u16, inner_height: u16) -> Vec<Line<'static>> {
@@ -750,6 +820,31 @@ mod help_content_tests {
             !lines.iter().any(|l| l.contains("Tab: Switch")),
             "Tab focus shortcut should be removed from Observer help now that only one field exists: {lines:?}"
         );
+    }
+
+    #[test]
+    fn short_observer_help_keeps_essential_controls_and_close_hint_visible() {
+        let app = AppState::new(UserRole::Admin);
+        for (width, height) in [(80, 10), (80, 12), (40, 10), (60, 12), (20, 8)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| render_help_popup(frame, &app, Tab::Admin(AdminTab::Observer)))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            for expected in ["Ctrl+L", "Ctrl+S", "Ctrl+C", "Enter"] {
+                assert!(
+                    buffer_contains(buffer, expected),
+                    "missing {expected} at {width}x{height}: {}",
+                    buffer_text(buffer)
+                );
+            }
+            assert!(
+                buffer_contains(buffer, HELP_CLOSE_HINT)
+                    || (buffer_contains(buffer, "Ctrl+H") && buffer_contains(buffer, "close")),
+                "close hint missing at {width}x{height}: {}",
+                buffer_text(buffer)
+            );
+        }
     }
 
     #[test]
