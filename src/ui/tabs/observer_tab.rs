@@ -1,3 +1,9 @@
+//! Observer (read-only Shared-key chat).
+//!
+//! Shortcut hints use a one-row keycap command bar; paste/scroll (and save-file
+//! when attachments exist) sit on the chat border. The Ctrl+H help overlay is
+//! styled in [`crate::ui::help_popup`].
+
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -41,9 +47,11 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Primary Observer keycap row (`Load` / `Help` / `Copy` / `Clear` / `All`).
+///
+/// Help and Copy are ordered before Clear-all so narrow terminals keep the same
+/// primary discoverability as My Trades / Disputes.
 fn observer_command_bar(width: u16) -> Line<'static> {
-    // Help/Copy before Clear-all so narrow terminals keep the same primary
-    // discoverability as My Trades / Disputes.
     shortcut_bar(
         width,
         &[
@@ -56,6 +64,7 @@ fn observer_command_bar(width: u16) -> Line<'static> {
     )
 }
 
+/// Copy-mode keycaps including Ctrl+L clear; stacks one group per line when needed.
 fn observer_copy_controls(width: u16) -> Text<'static> {
     let hints = [
         ("↑↓", "Select"),
@@ -83,6 +92,8 @@ fn observer_copy_controls(width: u16) -> Text<'static> {
     }
 }
 
+/// Render the Observer tab: Shared-key input, read-only message list, and
+/// keycap command/copy controls.
 pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     chat_copy::validate_selection(app);
     let selection = chat_copy::selected_index(app);
@@ -284,7 +295,7 @@ pub fn render_observer_tab(f: &mut ratatui::Frame, area: Rect, app: &mut AppStat
         f.render_stateful_widget(scroll_view, inner_area, &mut app.observer_scrollview_state);
     }
 
-    // Shared key input + footer
+    // Shared key input + keycap command bar (or copy controls).
     let input_chunks = Layout::new(
         Direction::Vertical,
         [

@@ -1,4 +1,8 @@
-//! My Trades / order chat UI. Ctrl+H and Shift+H help overlays are styled in [`crate::ui::help_popup`].
+//! My Trades / order chat UI.
+//!
+//! Shortcut hints use a one-row keycap command bar (INSERT / COMMAND) with
+//! channel and file hints on the chat border; trade actions stay in Ctrl+K.
+//! Ctrl+H and Shift+H help overlays are styled in [`crate::ui::help_popup`].
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};

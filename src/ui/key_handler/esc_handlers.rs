@@ -336,7 +336,7 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             {
                 app.order_chat_input_enabled = false;
             }
-            // Observer help/footer advertise Esc clears the inline error.
+            // Observer command bar advertises Esc → Clear (inline error).
             if matches!(app.active_tab, Tab::Admin(AdminTab::Observer))
                 && app.observer_inputs_editable()
                 && app.observer_error.is_some()

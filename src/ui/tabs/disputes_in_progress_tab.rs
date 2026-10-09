@@ -1,4 +1,8 @@
-//! Admin disputes-in-progress UI. The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
+//! Admin disputes-in-progress UI.
+//!
+//! Shortcut hints use a one-row keycap command bar (Shift+I toggles INSERT /
+//! COMMAND) with party, resolve, filter, and file hints on the chat border.
+//! The Ctrl+H help overlay is styled in [`crate::ui::help_popup`].
 
 use std::str::FromStr;
 
@@ -90,6 +94,11 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Mode-aware keycap row for the dispute command bar.
+///
+/// Finalized disputes show filter/remove/nav; managing disputes switch between
+/// INSERT (`Enter` Send) and COMMAND (`Shift+I` Write). Resolve/Recover stay on
+/// the chat border when managing (no Ctrl+K Actions menu yet).
 fn dispute_command_bar(
     width: u16,
     input_enabled: bool,
@@ -135,6 +144,7 @@ fn dispute_command_bar(
     }
 }
 
+/// Copy-mode keycaps; stacks one group per line when the row does not fit.
 fn dispute_copy_controls(width: u16) -> Text<'static> {
     let hints = [("↑↓", "Select"), ("Enter", "Copy"), ("Esc", "Cancel")];
     let full = shortcut_bar(u16::MAX, &hints);
@@ -157,6 +167,7 @@ fn dispute_copy_controls(width: u16) -> Text<'static> {
     }
 }
 
+/// Short Shift+C filter target for the chat-border keycap (`Finalized` / `In progress`).
 fn filter_hint_label(filter: DisputeFilter) -> &'static str {
     match filter {
         DisputeFilter::InProgress => "Finalized",
@@ -164,9 +175,8 @@ fn filter_hint_label(filter: DisputeFilter) -> &'static str {
     }
 }
 
-/// Render the "Disputes in Progress" tab for admin mode
-/// This shows a sidebar with active disputes and a detailed view with chat interface
-/// Can filter between InProgress and Finalized disputes
+/// Render the Disputes in Progress tab: sidebar list, dispute detail, party chat,
+/// and a mode-aware keycap command bar (contextual hints on the chat border).
 pub fn render_disputes_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
     chat_copy::validate_selection(app);
     let copy_selection = chat_copy::selected_index(app);

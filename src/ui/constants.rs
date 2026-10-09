@@ -5,7 +5,8 @@
 
 pub const HELP_CLOSE_HINT: &str = "Esc, Enter or Ctrl+H to close";
 
-/// Footer hint shown in help and disputes footer
+/// Ctrl+H shortcut label (`Ctrl+H: Help`). Live dispute/Observer/My Trades UIs
+/// render keycap bars instead; this string remains for shared help-style copy.
 pub const HELP_KEY: &str = "Ctrl+H: Help";
 
 // Filter toggle (Disputes in Progress)
@@ -212,10 +213,17 @@ pub const HELP_CNO_CHANGE_FIELD: &str = "↑↓: Change field";
 pub const HELP_CNO_TAB_NEXT: &str = "Tab: Next field";
 pub const HELP_CNO_ENTER_CONFIRM: &str = "Enter: Confirm order (from form)";
 
-// --- Footer (Disputes in Progress) ---
+// --- Attachment / popup footers ---
 
 /// Hint shown in the Save Attachment popup footer (↑↓ Select, Enter Save, Esc Cancel).
 pub const SAVE_ATTACHMENT_POPUP_HINT: &str = "↑↓ Select, Enter Save, Esc Cancel";
+
+/// Input placeholder while Disputes In Progress shows the SERBERO pane.
+pub const SOLVER_DMS_READ_ONLY: &str = "Serbero messages are read-only · Tab: Buyer";
+
+// --- Legacy plain-text footer fragments ---
+// Dispute, Observer, and My Trades live UIs render keycap bars in their tab
+// modules instead of concatenating these. Kept for docs / possible reuse.
 
 pub const FOOTER_CTRL_S_SAVE_FILE: &str = " | Ctrl+S: Save file";
 pub const FOOTER_CTRL_O_SEND_FILE: &str = " | Ctrl+O: Send file";
@@ -224,8 +232,6 @@ pub const FOOTER_SENDING_ATTACHMENT: &str = " | Sending attachment…";
 pub const FOOTER_UP_DOWN_SELECT: &str = "↑↓: Select";
 pub const FOOTER_UP_DOWN_SELECT_DISPUTE: &str = "↑↓: Select Dispute";
 pub const FOOTER_TAB_PARTY: &str = "Tab: Party";
-/// Input placeholder while Disputes In Progress shows the SERBERO pane.
-pub const SOLVER_DMS_READ_ONLY: &str = "Serbero messages are read-only · Tab: Buyer";
 pub const FOOTER_TAB_SWITCH_PARTY: &str = "Tab: Switch Party";
 pub const FOOTER_ENTER_SEND: &str = "Enter: Send";
 pub const FOOTER_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve";
@@ -237,9 +243,6 @@ pub const FOOTER_PGUP_PGDN_SCROLL: &str = "PgUp/PgDn: Scroll";
 pub const FOOTER_END_BOTTOM: &str = "End: Bottom";
 pub const FOOTER_NAV_CHAT: &str = "↑↓: Navigate Chat";
 pub const FOOTER_PGUP_PGDN_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll Chat";
-
-// --- Footer (My Trades / Order Chat) ---
-
 pub const FOOTER_MYTRADES_SELECT_ORDER: &str = "↑↓: Select order";
 pub const FOOTER_MYTRADES_TAB_CHAT: &str = "Tab: Peer/Solver chat";
 pub const FOOTER_MYTRADES_ENTER_SEND: &str = "Enter: Send";
