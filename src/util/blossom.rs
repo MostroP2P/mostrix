@@ -327,12 +327,13 @@ pub async fn save_attachment_to_disk(
 /// `~/.mostrix/downloads/`. Sends `OperationResult::Info(path)` or `OperationResult::Error` on completion.
 pub fn spawn_save_attachment(
     dispute_id: String,
-    attachment: ChatAttachment,
+    mut attachment: ChatAttachment,
     order_result_tx: UnboundedSender<OperationResult>,
 ) {
-    let blossom_url = attachment.blossom_url;
-    let filename = attachment.filename;
-    let decryption_key = attachment.decryption_key;
+    // `ChatAttachment` implements Drop (zeroizes keys); take fields instead of moving out.
+    let blossom_url = std::mem::take(&mut attachment.blossom_url);
+    let filename = std::mem::take(&mut attachment.filename);
+    let decryption_key = attachment.decryption_key.take();
     tokio::spawn(async move {
         match save_attachment_to_disk(dispute_id, blossom_url, filename, decryption_key).await {
             Ok(path) => {

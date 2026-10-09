@@ -381,15 +381,18 @@ fn spawn_bulk_history_cleanup_task(
 
 fn handle_enter_admin_managing_dispute_chat(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) {
     let mode_after_send = UiMode::AdminMode(AdminMode::ManagingDispute);
+    // `handle_enter_key` replaces mode with Normal before matching ManagingDispute.
+    // Restore Managing before ownership resolve, or live_admin_chat_draft_target
+    // returns None and clears the draft (no send).
+    app.mode = mode_after_send.clone();
     // Serbero's pane is read-only: nothing to send.
     if !matches!(app.active_tab, Tab::Admin(AdminTab::DisputesInProgress))
         || app.admin_show_solver_dms
     {
-        app.mode = mode_after_send;
         return;
     }
 
-    // Resolve + validate draft ownership before using the live selection.
+    // Resolve + validate draft ownership against the displayed dispute/party.
     let owned = crate::ui::key_handler::chat_helpers::resolve_admin_chat_send_target(app);
     let content = app.admin_chat_input.trim().to_string();
     let input_enabled = app.admin_chat_input_enabled;

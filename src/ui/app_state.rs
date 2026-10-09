@@ -664,6 +664,9 @@ impl AppState {
     pub fn begin_observer_fetch(&mut self) -> u64 {
         let generation = self.bump_observer_fetch_generation();
         self.zeroize_observer_messages();
+        // Wipe the previous pin before replacing so old K_conv bytes do not linger.
+        self.observer_loaded_shared_key.zeroize();
+        self.observer_loaded_shared_key.clear();
         self.observer_loaded_shared_key = self.observer_shared_key_input.trim().to_string();
         self.observer_error = None;
         self.observer_loading = true;
@@ -843,6 +846,23 @@ mod tests {
         assert!(app.observer_messages.is_empty());
         assert!(app.observer_loaded_shared_key.is_empty());
         assert_ne!(app.observer_fetch_generation, gen);
+    }
+
+    #[test]
+    fn begin_observer_fetch_replaces_previous_loaded_pin() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.observer_shared_key_input = "aa".repeat(32);
+        app.begin_observer_fetch();
+        assert_eq!(app.observer_loaded_shared_key, "aa".repeat(32));
+
+        app.observer_shared_key_input = "bb".repeat(32);
+        app.begin_observer_fetch();
+        assert_eq!(
+            app.observer_loaded_shared_key,
+            "bb".repeat(32),
+            "new Load must pin the current Shared key field"
+        );
+        assert!(!app.observer_loaded_shared_key.contains("aa"));
     }
 
     /// MOSTRO-075: stale created_at must not roll transport back (same instance).

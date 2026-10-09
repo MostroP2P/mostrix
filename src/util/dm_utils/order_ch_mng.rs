@@ -16,6 +16,17 @@ use nostr_sdk::prelude::PublicKey;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
+/// Wipe decrypted Observer message content and nested attachment keys.
+fn zeroize_observer_chat_payload(mut messages: Vec<crate::ui::chat::DisputeChatMessage>) {
+    for msg in &mut messages {
+        msg.content.zeroize();
+        if let Some(att) = msg.attachment.as_mut() {
+            att.zeroize_secrets();
+        }
+    }
+    messages.clear();
+}
+
 /// Apply a successful `user-info` fetch when it still matches the live session.
 ///
 /// Ignores replies for a previous Mostro instance or identity (key reload / switch),
@@ -549,17 +560,15 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
             messages,
         } => {
             if generation != app.observer_fetch_generation {
+                // Rejected/stale payload still holds decrypted content + keys —
+                // wipe before drop (Clear / tab exit / role switch / newer fetch).
+                zeroize_observer_chat_payload(messages);
                 return;
             }
             app.observer_loading = false;
             app.observer_error = None;
             // Replace after zeroizing any previous attachment keys.
-            for msg in &mut app.observer_messages {
-                msg.content.zeroize();
-                if let Some(att) = msg.attachment.as_mut() {
-                    att.zeroize_secrets();
-                }
-            }
+            zeroize_observer_chat_payload(std::mem::take(&mut app.observer_messages));
             app.observer_messages = messages;
             return;
         }
@@ -1365,7 +1374,7 @@ mod tests {
 
     #[test]
     fn stale_observer_chat_loaded_does_not_replace_newer_or_cleared_state() {
-        use crate::ui::chat::{ChatSender, DisputeChatMessage};
+        use crate::ui::chat::{ChatAttachment, ChatAttachmentType, ChatSender, DisputeChatMessage};
 
         let dummy = |content: &str| DisputeChatMessage {
             sender: ChatSender::Buyer,
@@ -1373,6 +1382,19 @@ mod tests {
             timestamp: 1,
             target_party: None,
             attachment: None,
+        };
+        let with_attachment_key = || DisputeChatMessage {
+            sender: ChatSender::Buyer,
+            content: "file".into(),
+            timestamp: 1,
+            target_party: None,
+            attachment: Some(ChatAttachment {
+                blossom_url: "https://example.com/a".into(),
+                filename: "a.bin".into(),
+                mime_type: None,
+                file_type: ChatAttachmentType::File,
+                decryption_key: Some(vec![9, 9, 9, 9]),
+            }),
         };
 
         let mut app = AppState::new(UserRole::Admin);
@@ -1391,10 +1413,11 @@ mod tests {
         );
 
         let gen_b = app.begin_observer_fetch();
+        // Stale payload with attachment keys must be wiped on reject (not left for Drop alone).
         handle_operation_result(
             OperationResult::ObserverChatLoaded {
                 generation: gen_a,
-                messages: vec![dummy("from-a")],
+                messages: vec![with_attachment_key()],
             },
             &mut app,
         );

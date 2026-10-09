@@ -89,6 +89,12 @@ impl ChatAttachment {
     }
 }
 
+impl Drop for ChatAttachment {
+    fn drop(&mut self) {
+        self.zeroize_secrets();
+    }
+}
+
 /// A chat message in the dispute resolution interface
 #[derive(Clone, Debug)]
 pub struct DisputeChatMessage {

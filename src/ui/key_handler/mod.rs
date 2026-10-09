@@ -2213,9 +2213,15 @@ pub fn handle_key_event(
             && interactive
         {
             let previous = app.mode.clone();
+            // Pin the displayed filtered row (first-row fallback when id unset/hidden),
+            // not the raw stored id which may be None or filtered out.
+            let pinned = selected_filtered_dispute(app).map(|d| d.dispute_id);
+            if let Some(id) = pinned.as_ref() {
+                app.selected_dispute_id = Some(id.clone());
+            }
             app.mode = UiMode::DisputeActionsPopup {
                 selected_index: 0,
-                dispute_id: app.selected_dispute_id.clone(),
+                dispute_id: pinned,
                 previous_mode: Box::new(previous),
             };
             return Some(true);
@@ -3767,6 +3773,45 @@ mod key_handler_tests {
             }
             other => panic!("unexpected mode: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn ctrl_k_actions_pins_displayed_dispute_when_stored_id_unset() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.dispute_filter = crate::ui::DisputeFilter::InProgress;
+        app.admin_disputes_in_progress = vec![
+            crate::models::AdminDispute {
+                dispute_id: "d-visible".into(),
+                status: Some("in-progress".into()),
+                ..Default::default()
+            },
+            crate::models::AdminDispute {
+                dispute_id: "d-other".into(),
+                status: Some("in-progress".into()),
+                ..Default::default()
+            },
+        ];
+        app.selected_dispute_id = None;
+
+        dispatch_observer_test_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        match &app.mode {
+            UiMode::DisputeActionsPopup { dispute_id, .. } => {
+                assert_eq!(
+                    dispute_id.as_deref(),
+                    Some("d-visible"),
+                    "Actions must pin the highlighted first-row fallback"
+                );
+            }
+            other => panic!("expected DisputeActionsPopup, got {other:?}"),
+        }
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("d-visible"));
     }
 
     #[test]

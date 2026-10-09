@@ -924,19 +924,26 @@ pub fn render_order_in_progress(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let chat_border_hints = if copy_context {
         Line::default()
     } else if hint_height == 0 {
-        // Compact fallback: chrome first (discoverable Actions/Help/Copy), then
-        // contextual file/channel hints. shortcut_bar skips groups that do not
-        // fit so a long Retry cannot suppress later Save/Send that would fit.
-        let mut compact = vec![
+        // Compact fallback: lead with one live contextual action (Tab/Retry/
+        // Save/Send), then chrome, then any remaining contextual. Chrome-first
+        // left no contextual room at short full-shell widths; all-contextual-
+        // first can push Actions off a narrow chat pane (~60x15 half width).
+        let contextual: Vec<_> = chat_hints
+            .iter()
+            .copied()
+            .filter(|(key, _)| matches!(*key, "Tab" | "Ctrl+S" | "Ctrl+O" | "Ctrl+Shift+O"))
+            .collect();
+        let mut compact = Vec::new();
+        let mut contextual = contextual.into_iter();
+        if let Some(first) = contextual.next() {
+            compact.push(first);
+        }
+        compact.extend([
             ("Ctrl+K", "Actions"),
             ("Ctrl+H", "Help"),
             ("Ctrl+C", "Copy"),
-        ];
-        for &(key, label) in &chat_hints {
-            if matches!(key, "Tab" | "Ctrl+S" | "Ctrl+O" | "Ctrl+Shift+O") {
-                compact.push((key, label));
-            }
-        }
+        ]);
+        compact.extend(contextual);
         shortcut_bar(chat_area.width.saturating_sub(2), &compact)
     } else {
         shortcut_bar(chat_area.width.saturating_sub(2), &chat_hints)
@@ -1226,6 +1233,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn zero_row_compact_border_keeps_a_contextual_action() {
+        // Short full-shell widths leave hint_height == 0. Lead with one
+        // contextual hint, then chrome — width ~34 must still show a trade action.
+        let contextual = [
+            ("Tab", "Peer/Solver"),
+            ("Ctrl+S", "Save file"),
+            ("Ctrl+O", "Send file"),
+        ];
+        let mut compact = vec![contextual[0]];
+        compact.extend([
+            ("Ctrl+K", "Actions"),
+            ("Ctrl+H", "Help"),
+            ("Ctrl+C", "Copy"),
+        ]);
+        compact.extend(contextual[1..].iter().copied());
+        let line = super::shortcut_bar(34, &compact);
+        let text = line.to_string();
+        assert!(
+            text.contains("Peer")
+                || text.contains("Tab")
+                || text.contains("Save")
+                || text.contains("Send"),
+            "expected a contextual action at width 34, got: {text}"
+        );
     }
 
     #[test]

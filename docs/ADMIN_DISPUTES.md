@@ -77,7 +77,7 @@ The interface is divided into three main sections:
 
 - **Real-time chat**: Direct typing with instant visual feedback
 - **Party switching**: Tab key cycles BUYER → SELLER → SERBERO; clears any unsent composer draft (same idea as My Trades channel switch)
-- **Draft ownership**: `admin_chat_draft_owner: Option<(dispute_id, ChatParty)>` — Enter send validates the draft belongs to the live dispute/party (`prepare_admin_chat_edit` / `resolve_admin_chat_send_target` in `chat_helpers.rs`). ↑↓ dispute change, Tab pane change, and filter toggle clear an unowned draft so text typed for Buyer A cannot be sent to Seller B or another dispute
+- **Draft ownership**: `admin_chat_draft_owner: Option<(dispute_id, ChatParty)>` — binds to the **displayed** filtered row (`selected_filtered_dispute`, including first-row fallback when `selected_dispute_id` is unset). Enter send validates ownership (`prepare_admin_chat_edit` / `resolve_admin_chat_send_target`); the Enter path restores `ManagingDispute` before resolve because `handle_enter_key` temporarily swaps mode to `Normal`. ↑↓ / Tab / filter clear unowned drafts so text typed for Buyer A cannot be sent to Seller B or another dispute
 - **Message history**: Per-dispute chat storage with scrolling
 - **Dynamic input**: Input box grows from 1 to 10 lines
 - **Selection safety**: chat send, Shift+F finalize, Ctrl+S save-attachment, and chat scroll all call `selected_filtered_dispute` so messages are encrypted to the shared key of the dispute the sidebar highlights (avoids silently targeting a closed dispute sorted above an open one by `taken_at DESC`)
@@ -632,7 +632,7 @@ Admins communicate with buyers and sellers through an integrated chat interface 
 - **Delete (local)**: Press **Delete** (COMMAND) or **Ctrl+K → D** to remove the selected dispute from the local `admin_disputes` table and the left sidebar. This does **not** cancel or settle on Mostro; **Shift+R** / Actions → Recover can re-fetch if the dispute is still assigned to you.
 - **INSERT / COMMAND**: Press **i** (or Insert) on BUYER/SELLER to enter INSERT; **Esc** returns to COMMAND (draft kept for the same dispute/party). SERBERO is read-only. Titles show `Message / INSERT` or `Message / COMMAND` (compact: `INSERT · Esc` / `COMMAND · i`).
 - **Draft ownership**: Typing/paste binds `admin_chat_draft_owner`; Enter refuses to send if the live dispute/party no longer matches.
-- **Ctrl+K Actions**: Resolve, Recover, Filter, Remove — same outcomes as the COMMAND Shift/Delete shortcuts. Dispute id is pinned at open; letter keys only move selection, Enter confirms.
+- **Ctrl+K Actions**: Resolve, Recover, Filter, Remove — same outcomes as the COMMAND Shift/Delete shortcuts. Pins the **displayed** filtered dispute id at open (not a hidden/stale stored id); letter keys only move selection, Enter confirms.
 - **Text wrapping**: Input wraps at word boundaries with trim behavior
 - **Multi-line support**: Supports up to 10 lines with visual growth
 - **Send on Enter**: Press Enter in INSERT to send message (ownership-checked)
