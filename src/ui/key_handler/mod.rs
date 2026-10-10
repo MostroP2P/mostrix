@@ -2648,11 +2648,18 @@ pub fn handle_key_event(
                 return Some(true);
             }
 
-            // Handle chat message navigation when input is disabled (Disputes in Progress)
+            // Disputes in Progress: plain Up/Down always select a dispute in the
+            // sidebar (what the help advertises). Ctrl/Shift+Up/Down move the
+            // highlighted chat message instead, in COMMAND on BUYER/SELLER only.
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
-                    // In the SERBERO pane Up/Down keep selecting disputes.
-                    if !app.admin_chat_input_enabled && !app.admin_show_solver_dms {
+                    let wants_chat_message = key_event
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+                    if wants_chat_message
+                        && !app.admin_chat_input_enabled
+                        && !app.admin_show_solver_dms
+                    {
                         let dispute_id_key = selected_filtered_dispute(app).map(|d| d.dispute_id);
                         if let Some(dispute_id_key) = dispute_id_key {
                             if chat_helpers::navigate_chat_messages(app, &dispute_id_key, code) {
@@ -4512,6 +4519,51 @@ mod key_handler_tests {
                 "Ctrl+C is not the unmodified copy key and must clear the indicator"
             ),
             other => panic!("expected ConversationDisclosure, got {other:?}"),
+        }
+    }
+
+    fn app_with_two_chatty_disputes() -> AppState {
+        let mut app = chat_copy::tests::app_with_messages();
+        app.admin_disputes_in_progress
+            .push(crate::models::AdminDispute {
+                dispute_id: "dispute-2".into(),
+                status: Some("in-progress".into()),
+                ..Default::default()
+            });
+        let chat = app.admin_dispute_chats["dispute"].clone();
+        app.admin_dispute_chats.insert("dispute-2".into(), chat);
+        app.admin_chat_input_enabled = false;
+        app.admin_show_solver_dms = false;
+        // BUYER pane shows two messages (buyer + admin); start on the first.
+        app.admin_chat_selected_message_idx = Some(0);
+        app
+    }
+
+    #[tokio::test]
+    async fn plain_arrows_move_the_dispute_sidebar_even_when_the_chat_has_messages() {
+        let mut app = app_with_two_chatty_disputes();
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("dispute"));
+
+        dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("dispute-2"));
+
+        dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).await;
+        assert_eq!(app.selected_dispute_id.as_deref(), Some("dispute"));
+    }
+
+    #[tokio::test]
+    async fn ctrl_arrows_move_the_chat_message_selection_not_the_sidebar() {
+        for modifier in [KeyModifiers::CONTROL, KeyModifiers::SHIFT] {
+            let mut app = app_with_two_chatty_disputes();
+
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Down, modifier)).await;
+            assert_eq!(app.selected_dispute_id.as_deref(), Some("dispute"));
+            assert_eq!(app.admin_chat_selected_message_idx, Some(1));
+
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Up, modifier)).await;
+            assert_eq!(app.selected_dispute_id.as_deref(), Some("dispute"));
+            assert_eq!(app.admin_chat_selected_message_idx, Some(0));
         }
     }
 }

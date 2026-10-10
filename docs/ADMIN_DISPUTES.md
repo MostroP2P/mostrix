@@ -86,7 +86,8 @@ The interface is divided into three main sections:
 
 #### Keyboard Navigation
 
-- **Up/Down**: Select dispute in sidebar (moves within the filtered list; viewport scrolls to keep selection visible; clears unsent draft when the dispute changes)
+- **Up/Down**: Select dispute in sidebar (moves within the filtered list; viewport scrolls to keep selection visible; clears unsent draft when the dispute changes). Plain arrows never touch the chat, even when it has messages
+- **Ctrl+Up/Down** (or Shift+Up/Down): Highlight the previous/next chat message (COMMAND on BUYER/SELLER only; scrolls the message into view)
 - **Tab / Shift+Tab**: Cycle panes BUYER → SELLER → SERBERO (assistant messages, read-only; clears draft; forces COMMAND on SERBERO)
 - **i / Insert**: Enter **INSERT** on BUYER/SELLER only (not SERBERO). **Esc** leaves INSERT → **COMMAND** (draft kept for the same dispute/party)
 - **Enter**: Send message (when INSERT and input has text; ownership must match live target)

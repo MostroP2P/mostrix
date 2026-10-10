@@ -33,6 +33,7 @@ pub const HELP_MORE_ON_TALLER_TERMINAL: &str = "… more shortcuts on a taller t
 pub const HELP_CTRL_T_TAKEOVER: &str =
     "Ctrl+T: Take over a dispute Serbero handed off (🙋) or is mediating";
 pub const HELP_DIP_SELECT_DISPUTE: &str = "↑↓: Select dispute (sidebar)";
+pub const HELP_DIP_SELECT_MESSAGE: &str = "Ctrl+↑↓: Highlight chat message (COMMAND)";
 pub const HELP_DIP_SCROLL_CHAT: &str = "PgUp/PgDn: Scroll chat";
 pub const HELP_DIP_END_BOTTOM: &str = "End: Jump to bottom of chat";
 pub const HELP_DIP_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve (finalize) dispute";
