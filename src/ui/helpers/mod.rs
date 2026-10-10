@@ -53,7 +53,7 @@ pub use formatting::{
     relative_time_compact, short_order_id, status_bar_reputation_segment,
 };
 pub use layout::{
-    create_centered_popup, render_compact_action_strip, render_help_text,
+    copy_controls_bar, create_centered_popup, render_compact_action_strip, render_help_text,
     render_table_list_scrollbar, render_yes_no_buttons, render_yes_no_cancel_buttons, shortcut_bar,
     shortcut_bar_rows,
 };

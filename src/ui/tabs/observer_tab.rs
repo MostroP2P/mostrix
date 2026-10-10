@@ -102,28 +102,12 @@ fn observer_command_bar(width: u16) -> Line<'static> {
 fn observer_copy_controls(width: u16) -> Text<'static> {
     let hints = [
         ("↑↓", "Select"),
+        ("Shift+↑↓", "Range"),
         ("Enter", "Copy"),
         ("Esc", "Cancel"),
         ("Ctrl+L", "Clear"),
     ];
-    let full = shortcut_bar(u16::MAX, &hints);
-    if full.width() <= usize::from(width) {
-        Text::from(full)
-    } else {
-        Text::from(
-            hints
-                .iter()
-                .map(|&(key, label)| {
-                    let line = shortcut_bar(width, &[(key, label)]);
-                    if line.spans.is_empty() {
-                        shortcut_bar(width, &[(key, "")])
-                    } else {
-                        line
-                    }
-                })
-                .collect::<Vec<_>>(),
-        )
-    }
+    crate::ui::helpers::copy_controls_bar(width, &hints)
 }
 
 /// Render the Observer tab: Shared-key input, read-only message list, and
@@ -499,6 +483,9 @@ mod tests {
                 let text = controls.to_string();
                 for label in ["Select", "Copy", "Cancel"] {
                     assert!(text.contains(label), "missing {label} at width {width}");
+                }
+                if width >= 16 {
+                    assert!(text.contains("Range"), "missing Range at width {width}");
                 }
             }
         }
