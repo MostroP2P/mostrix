@@ -653,6 +653,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 filter_hint.to_string(),
                 HELP_DIP_TAB_PARTY.to_string(),
                 HELP_DIP_SELECT_DISPUTE.to_string(),
+                HELP_DIP_SELECT_MESSAGE.to_string(),
                 HELP_DIP_SCROLL_CHAT.to_string(),
                 HELP_DIP_END_BOTTOM.to_string(),
                 HELP_DIP_CTRL_K_ACTIONS.to_string(),
