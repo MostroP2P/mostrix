@@ -2660,12 +2660,15 @@ pub fn handle_key_event(
                         && !app.admin_chat_input_enabled
                         && !app.admin_show_solver_dms
                     {
-                        let dispute_id_key = selected_filtered_dispute(app).map(|d| d.dispute_id);
-                        if let Some(dispute_id_key) = dispute_id_key {
-                            if chat_helpers::navigate_chat_messages(app, &dispute_id_key, code) {
-                                return Some(true);
-                            }
+                        // Consume the chord even when the chat has no visible message:
+                        // a message-only shortcut must never fall through to the
+                        // sidebar (which would also clear an unsent draft).
+                        if let Some(dispute_id_key) =
+                            selected_filtered_dispute(app).map(|d| d.dispute_id)
+                        {
+                            chat_helpers::navigate_chat_messages(app, &dispute_id_key, code);
                         }
+                        return Some(true);
                     }
                 }
             }
@@ -4564,6 +4567,21 @@ mod key_handler_tests {
             dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Up, modifier)).await;
             assert_eq!(app.selected_dispute_id.as_deref(), Some("dispute"));
             assert_eq!(app.admin_chat_selected_message_idx, Some(0));
+        }
+    }
+
+    #[tokio::test]
+    async fn modified_arrows_never_move_the_sidebar_when_the_chat_is_empty() {
+        for modifier in [KeyModifiers::CONTROL, KeyModifiers::SHIFT] {
+            let mut app = app_with_two_chatty_disputes();
+            app.admin_dispute_chats.clear();
+            app.admin_chat_selected_message_idx = None;
+            app.admin_chat_input = "unsent draft".into();
+
+            dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Down, modifier)).await;
+            assert_eq!(app.selected_dispute_id.as_deref(), Some("dispute"));
+            assert_eq!(app.admin_chat_selected_message_idx, None);
+            assert_eq!(app.admin_chat_input, "unsent draft");
         }
     }
 }
