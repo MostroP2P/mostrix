@@ -1465,7 +1465,7 @@ mod tests {
             render_copy(&mut app, 60, 12);
             chat_copy::handle_key_with(
                 &mut app,
-                &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                &KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
                 |_| false,
             );
             let buffer = render_copy(&mut app, 60, 12);

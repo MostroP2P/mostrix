@@ -1233,7 +1233,7 @@ mod tests {
         assert_eq!(app.admin_chat_scrollview_state.offset().y, 0);
         chat_copy::handle_key_with(
             &mut app,
-            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
             |_| false,
         );
         let buffer = render_copy(&mut app, 60, 12);

@@ -102,9 +102,10 @@ The interface is divided into three main sections:
 - **Ctrl+H**: Open help popup with all shortcuts for this tab (Esc/Enter/Ctrl+H to close)
 
 With an active dispute selected, **Ctrl+C** starts message selection in BUYER,
-SELLER, or SERBERO at the first displayed message. **Up/Down** extend the
-highlighted range from that starting message, **Enter** copies that range, and
-**Esc** cancels.
+SELLER, or SERBERO at the first displayed message. **Up/Down** move the
+single highlighted message; **Shift+Up/Down** extend the highlighted range from
+the message where you started holding Shift; **Enter** copies the highlighted
+message(s) and **Esc** cancels.
 The first selected message follows display order: oldest first for party chats,
 newest first for SERBERO. Solver DMs copy their full stored text, including the
 header hidden in the pane; attachments copy the filename only. Typing, sending,
@@ -145,7 +146,7 @@ The Observer tab is a read-only tool that lets admins inspect encrypted user-to-
 - **Enter**: Fetch chat from relays using the Shared key, or copy the selected message during copy selection. Load pins `observer_loaded_shared_key` for attachment decrypt.
 - **Ctrl+L**: **Clear** all — Shared key, loaded pin, messages (including attachment `decryption_key` bytes via `ChatAttachment::zeroize_secrets`), error, and loading (when no popup is open). Pending fetch results are invalidated. Keycap label is **Clear** (not Esc).
 - **Ctrl+K**: Observer actions popup (Clear all / Save attachment / Dismiss error). **↑↓ or letter** moves the highlight; **Enter** confirms (letter `L` does **not** wipe secrets by itself).
-- **Ctrl+C**: Select the first displayed message in a loaded conversation. Up/Down extend the highlighted range, Enter copies it, and Esc cancels without changing the Shared key.
+- **Ctrl+C**: Select the first displayed message in a loaded conversation. Up/Down move the single highlighted message, Shift+Up/Down extend the highlighted range, Enter copies it, and Esc cancels without changing the Shared key.
 - **Esc**: **Dismiss** the inline Observer error only (does not wipe Shared key or messages). Shown as `Esc Dismiss` on the chat border when an error is present.
 - **Ctrl+S**: Open save-attachment popup (when attachments are present in the fetched chat); also via Ctrl+K → S.
 - **Ctrl+H**: Open help popup with Observer shortcuts (Esc/Enter/Ctrl+H to close).
