@@ -659,6 +659,9 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DIP_SHIFT_F_RESOLVE.to_string(),
                 HELP_DIP_SHIFT_R_RECOVER.to_string(),
                 HELP_CTRL_T_TAKEOVER.to_string(),
+                // Secondary hint: after the action shortcuts so the compact
+                // fitter on short terminals never drops Ctrl+K in its favour.
+                HELP_DIP_SELECT_MESSAGE.to_string(),
             ];
             if !is_finalized {
                 lines.push(HELP_DIP_SHIFT_I_INPUT.to_string());
@@ -1067,6 +1070,44 @@ mod help_content_tests {
                 "first shortcut missing at {width}x{height}"
             );
         }
+    }
+
+    #[test]
+    fn short_disputes_in_progress_help_keeps_ctrl_k_ahead_of_message_hint() {
+        use crate::models::AdminDispute;
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = vec![AdminDispute {
+            dispute_id: "d1".into(),
+            status: Some("in-progress".into()),
+            ..Default::default()
+        }];
+        app.selected_dispute_id = Some("d1".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 13)).unwrap();
+
+        terminal
+            .draw(|f| render_help_popup(f, &app, Tab::Admin(AdminTab::DisputesInProgress)))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "Ctrl+K:"),
+            "Ctrl+K actions clipped at 80x13:\n{}",
+            buffer_text(buf)
+        );
+    }
+
+    #[test]
+    fn disputes_in_progress_help_documents_shift_arrows_for_messages() {
+        let (_, lines) = help_content(
+            &AppState::new(UserRole::Admin),
+            Tab::Admin(AdminTab::DisputesInProgress),
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Shift+↑↓") && l.contains("message")),
+            "help omits Shift+↑↓ for message highlight: {lines:?}"
+        );
     }
 
     #[test]
