@@ -72,10 +72,10 @@ pub const HELP_DIP_PASTE_CHAT: &str =
     "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
 pub const HELP_DIP_CTRL_S_ATTACH: &str = "Ctrl+S: Save attachment (choose from list)";
 pub const CHAT_COPY_START: &str = "Ctrl+C:Copy";
-pub const CHAT_COPY_HINT: &str = "↑↓:Extend Enter:Copy Esc:Cancel";
+pub const CHAT_COPY_HINT: &str = "↑↓:Select Shift+↑↓:Range Enter:Copy Esc:Cancel";
 pub const HELP_CHAT_COPY: &str = "Ctrl+C: Select messages to copy (also while typing)";
 pub const HELP_CHAT_COPY_KEYS: &str =
-    "Copy mode: ↑↓ extend, Enter copies, Esc cancels; draft preserved";
+    "Copy mode: ↑↓ pick a message, Shift+↑↓ extend, Enter copies, Esc cancels";
 
 // Help popup lines (Disputes Pending)
 pub const HELP_DP_ENTER_TAKE: &str = "Enter: Take selected dispute";

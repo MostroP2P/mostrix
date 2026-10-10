@@ -197,25 +197,13 @@ fn dispute_command_bar(
 
 /// Copy-mode keycaps; stacks one group per line when the row does not fit.
 fn dispute_copy_controls(width: u16) -> Text<'static> {
-    let hints = [("↑↓", "Select"), ("Enter", "Copy"), ("Esc", "Cancel")];
-    let full = shortcut_bar(u16::MAX, &hints);
-    if full.width() <= usize::from(width) {
-        Text::from(full)
-    } else {
-        Text::from(
-            hints
-                .iter()
-                .map(|&(key, label)| {
-                    let line = shortcut_bar(width, &[(key, label)]);
-                    if line.spans.is_empty() {
-                        shortcut_bar(width, &[(key, "")])
-                    } else {
-                        line
-                    }
-                })
-                .collect::<Vec<_>>(),
-        )
-    }
+    let hints = [
+        ("↑↓", "Select"),
+        ("Shift+↑↓", "Range"),
+        ("Enter", "Copy"),
+        ("Esc", "Cancel"),
+    ];
+    crate::ui::helpers::copy_controls_bar(width, &hints)
 }
 
 /// Short Shift+C filter target for the chat-border keycap.
@@ -1233,7 +1221,7 @@ mod tests {
         assert_eq!(app.admin_chat_scrollview_state.offset().y, 0);
         chat_copy::handle_key_with(
             &mut app,
-            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
             |_| false,
         );
         let buffer = render_copy(&mut app, 60, 12);
@@ -1523,6 +1511,9 @@ mod tests {
                 let text = controls.to_string();
                 for label in ["Select", "Copy", "Cancel"] {
                     assert!(text.contains(label), "missing {label} at width {width}");
+                }
+                if width >= 16 {
+                    assert!(text.contains("Range"), "missing Range at width {width}");
                 }
             }
         }

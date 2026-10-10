@@ -43,6 +43,46 @@ pub fn shortcut_bar_rows(width: u16, hints: &[(&str, &str)]) -> Text<'static> {
     Text::from(lines)
 }
 
+/// Keycap strip for chat copy mode: one row when everything fits, otherwise
+/// packs as many groups per row as the width allows (never one-per-row), so the
+/// footer stays within its height cap on narrow and short terminals. A group
+/// wider than the whole row keeps its key and drops the label.
+pub fn copy_controls_bar(width: u16, hints: &[(&str, &str)]) -> Text<'static> {
+    let full = shortcut_bar(u16::MAX, hints);
+    if full.width() <= usize::from(width) {
+        return Text::from(full);
+    }
+    let max = usize::from(width.max(1));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut row: Vec<(&str, &str)> = Vec::new();
+    let mut used = 0usize;
+    for &(key, label) in hints {
+        let group_width =
+            Span::raw(format!(" {key} ")).width() + Span::raw(format!(" {label}")).width();
+        if !row.is_empty() && used + 2 + group_width > max {
+            lines.push(shortcut_bar(u16::MAX, &row));
+            row.clear();
+            used = 0;
+        }
+        if row.is_empty() && group_width > max {
+            let line = shortcut_bar(width, &[(key, label)]);
+            lines.push(if line.spans.is_empty() {
+                shortcut_bar(width, &[(key, "")])
+            } else {
+                line
+            });
+            continue;
+        }
+        let gap = if row.is_empty() { 0 } else { 2 };
+        row.push((key, label));
+        used += gap + group_width;
+    }
+    if !row.is_empty() {
+        lines.push(shortcut_bar(u16::MAX, &row));
+    }
+    Text::from(lines)
+}
+
 fn shortcut_bar_impl(width: u16, hints: &[(&str, &str)], skip_oversized: bool) -> Line<'static> {
     let mut spans = Vec::new();
     let mut used = 0;
@@ -381,6 +421,34 @@ pub fn render_yes_no_cancel_buttons(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_controls_bar_packs_rows_and_never_exceeds_width() {
+        let hints = [
+            ("↑↓", "Select"),
+            ("Shift+↑↓", "Range"),
+            ("Enter", "Copy"),
+            ("Esc", "Cancel"),
+        ];
+        for width in 0..120u16 {
+            let text = copy_controls_bar(width, &hints);
+            assert!(
+                text.lines.iter().all(|l| l.width() <= usize::from(width)),
+                "overflow at {width}"
+            );
+            if width >= 60 {
+                assert_eq!(text.lines.len(), 1, "one row expected at {width}");
+            } else if width >= 30 {
+                assert!(text.lines.len() <= 2, "too many rows at {width}");
+            }
+            if width >= 16 {
+                assert!(
+                    text.to_string().contains("Range"),
+                    "Range missing at {width}"
+                );
+            }
+        }
+    }
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 

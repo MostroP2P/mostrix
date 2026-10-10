@@ -293,13 +293,17 @@ Messages tab's trade timeline are not copy-selection targets.
 
 1. **Ctrl+C** selects the first message in display order, including when chat
   input is enabled.
-2. **Up/Down** move the cursor through messages without wrapping at either end.
-  Every message from the starting message through the cursor stays highlighted.
-  The cursor end stays visible during resizing and incoming messages; an
-  oversized focused message is anchored at its beginning. A new Solver DM does
-  not change the selected DM identity.
-3. **Enter** copies the highlighted range (joined with newlines) and exits
-  selection, even if copying fails. **Esc** exits without copying.
+2. **Up/Down** move the highlighted message through the transcript without
+  wrapping at either end. Only one message is highlighted, so Enter copies
+  exactly the message you are on.
+3. **Shift+Up/Down** extend the selection: the message where you started
+  holding Shift stays as the anchor and every message from it through the
+  cursor is highlighted. A plain Up/Down collapses the range back to a single
+  message at the cursor. The cursor end stays visible during resizing and
+  incoming messages; an oversized focused message is anchored at its beginning.
+  A new Solver DM does not change the selected DM identity.
+4. **Enter** copies the highlighted message or range (joined with newlines) and
+  exits selection, even if copying fails. **Esc** exits without copying.
 
 Copying uses the exact stored text, preserving whitespace, Unicode, and
 newlines. It does not add displayed timestamps, sender labels, wrapping, or

@@ -23,7 +23,8 @@ pub(crate) enum ChatCopyTarget {
 
 pub(crate) struct ChatCopySession {
     target: ChatCopyTarget,
-    /// Fixed end of the selection (Ctrl+C start).
+    /// Fixed end of the selection while extending with Shift+Up/Down; plain
+    /// Up/Down move it together with the cursor (single-message selection).
     anchor_index: usize,
     /// Moving end of the selection (Up/Down cursor).
     selected_index: usize,
@@ -431,6 +432,13 @@ fn handle_key_with_result(
                 if let Some(message) = messages(app, &session.target).nth(session.selected_index) {
                     session.event_id = message.event_id.map(str::to_owned);
                     session.fingerprint = fingerprint(message);
+                }
+                // Plain Up/Down highlight a single message: the anchor follows the
+                // cursor. Shift+Up/Down keep the anchor so the range extends/shrinks.
+                if !key.modifiers.contains(KeyModifiers::SHIFT) {
+                    session.anchor_index = session.selected_index;
+                    session.anchor_event_id = session.event_id.clone();
+                    session.anchor_fingerprint = session.fingerprint;
                 }
                 refresh_range_fingerprints(app, &mut session);
             }
@@ -918,8 +926,8 @@ pub(crate) mod tests {
                 assert_eq!(selected_index(&app), Some(0));
                 assert_eq!(selected_range(&app), Some(0..=0));
                 if selected == 1 {
-                    press(&mut app, KeyCode::Down);
-                    press(&mut app, KeyCode::Down);
+                    press_shift(&mut app, KeyCode::Down);
+                    press_shift(&mut app, KeyCode::Down);
                 }
                 assert_eq!(selected_index(&app), Some(selected));
                 assert_eq!(selected_range(&app), Some(0..=selected));
@@ -1316,8 +1324,8 @@ pub(crate) mod tests {
                 press(&mut app, KeyCode::Up);
                 assert_eq!(selected_index(&app), Some(0));
                 assert_eq!(selected_range(&app), Some(0..=0));
-                press(&mut app, KeyCode::Down);
-                press(&mut app, KeyCode::Down);
+                press_shift(&mut app, KeyCode::Down);
+                press_shift(&mut app, KeyCode::Down);
                 assert_eq!(selected_index(&app), Some(1));
                 assert_eq!(selected_range(&app), Some(0..=1));
                 assert!(handle_key_with(
@@ -1401,6 +1409,76 @@ pub(crate) mod tests {
         ));
     }
 
+    fn press_shift(app: &mut AppState, code: KeyCode) {
+        assert!(handle_key_with(
+            app,
+            &KeyEvent::new(code, KeyModifiers::SHIFT),
+            |_| { panic!("unexpected clipboard write") }
+        ));
+    }
+
+    #[test]
+    fn plain_arrows_move_a_single_highlighted_message() {
+        let mut app = app_with_messages();
+        enter_selection(&mut app);
+        assert_eq!(selected_range(&app), Some(0..=0));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_index(&app), Some(1));
+        assert_eq!(selected_range(&app), Some(1..=1));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(selected_range(&app), Some(0..=0));
+    }
+
+    #[test]
+    fn enter_after_plain_down_copies_only_the_highlighted_message() {
+        let mut app = app_with_messages();
+        enter_selection(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert!(handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            |text| {
+                assert_eq!(text, "last");
+                true
+            }
+        ));
+        assert_eq!(feedback_text(&app), Some("Copied to clipboard"));
+    }
+
+    #[test]
+    fn shift_arrows_extend_the_range_and_a_plain_arrow_collapses_it() {
+        let mut app = app_with_messages();
+        app.admin_dispute_chats
+            .get_mut("dispute")
+            .unwrap()
+            .push(message(ChatSender::Buyer, "third"));
+        enter_selection(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_range(&app), Some(1..=1));
+        press_shift(&mut app, KeyCode::Down);
+        assert_eq!(selected_index(&app), Some(2));
+        assert_eq!(selected_range(&app), Some(1..=2));
+        press_shift(&mut app, KeyCode::Up);
+        press_shift(&mut app, KeyCode::Up);
+        assert_eq!(selected_index(&app), Some(0));
+        assert_eq!(selected_range(&app), Some(0..=1));
+        assert!(handle_key_with(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            |text| {
+                assert_eq!(text, "  first\nsecond\tline  \n\nlast");
+                true
+            }
+        ));
+
+        let mut app = app_with_messages();
+        enter_selection(&mut app);
+        press_shift(&mut app, KeyCode::Down);
+        assert_eq!(selected_range(&app), Some(0..=1));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(selected_range(&app), Some(0..=0));
+    }
+
     #[test]
     fn chat_copy_filters_navigates_and_preserves_both_input_layers() {
         for input_enabled in [false, true] {
@@ -1414,12 +1492,12 @@ pub(crate) mod tests {
             press(&mut app, KeyCode::Down);
             press(&mut app, KeyCode::Down);
             assert_eq!(selected_index(&app), Some(1));
-            assert_eq!(selected_range(&app), Some(0..=1));
+            assert_eq!(selected_range(&app), Some(1..=1));
             press(&mut app, KeyCode::Tab);
             press(&mut app, KeyCode::Char('x'));
             enter_selection(&mut app);
             assert_eq!(selected_index(&app), Some(1));
-            assert_eq!(selected_range(&app), Some(0..=1));
+            assert_eq!(selected_range(&app), Some(1..=1));
             press(&mut app, KeyCode::Esc);
             assert!(app.chat_copy_session.is_none());
             assert_eq!(app.admin_chat_input, "draft\n  untouched");
@@ -1436,9 +1514,9 @@ pub(crate) mod tests {
     fn chat_copy_range_shrinks_back_toward_anchor() {
         let mut app = app_with_messages();
         enter_selection(&mut app);
-        press(&mut app, KeyCode::Down);
+        press_shift(&mut app, KeyCode::Down);
         assert_eq!(selected_range(&app), Some(0..=1));
-        press(&mut app, KeyCode::Up);
+        press_shift(&mut app, KeyCode::Up);
         assert_eq!(selected_index(&app), Some(0));
         assert_eq!(selected_range(&app), Some(0..=0));
         let expected = copy_text_for_message(CopyMessage {
@@ -1486,8 +1564,8 @@ pub(crate) mod tests {
         // Buyer pane: first, middle, last(admin), middle(buyer), tail(admin)
         // Visible for buyer: Buyer "first", Admin "last", Buyer "middle", Admin "tail"
         enter_selection(&mut app);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
+        press_shift(&mut app, KeyCode::Down);
+        press_shift(&mut app, KeyCode::Down);
         assert_eq!(selected_range(&app), Some(0..=2));
         // Replace interior display index 1 (Admin "last" = vec index 2).
         app.admin_dispute_chats.get_mut("dispute").unwrap()[2].content = "replaced".into();
@@ -1507,7 +1585,7 @@ pub(crate) mod tests {
             decryption_key: None,
         });
         enter_selection(&mut app);
-        press(&mut app, KeyCode::Down);
+        press_shift(&mut app, KeyCode::Down);
         assert_eq!(selected_range(&app), Some(0..=1));
         let mut copied = false;
         assert!(handle_key_with(
