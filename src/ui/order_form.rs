@@ -8,6 +8,7 @@ use ratatui::widgets::{
 
 use super::{FormState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::currencies::{filter_options, name_for, resolve_options};
+use crate::ui::helpers::{display_width, trailing_to_width, truncate_to_width};
 use crate::ui::orders::FormField;
 use crate::ui::payment_methods::{parse_selected, picker_rows, PickerItem};
 use crate::util::MostroInstanceInfo;
@@ -274,6 +275,9 @@ fn render_details(
 /// Build a single field line: focus arrow + `label` on the panel background,
 /// then the value on a tinted "input strip" (green when focused) padded to
 /// `strip_width`, with a trailing ✓/✗ status glyph.
+///
+/// Value text is clamped to the strip so long payment methods (and filters)
+/// cannot paint past the Order details panel into the live preview.
 fn field_line(row: &Row, focused: bool, strip_width: usize, status: FieldStatus) -> Line<'static> {
     let arrow = if focused { "▸" } else { " " };
     let label_style = if focused {
@@ -290,18 +294,41 @@ fn field_line(row: &Row, focused: bool, strip_width: usize, status: FieldStatus)
         label_style,
     )];
 
-    let mut used = 0usize;
-    for s in &row.value.spans {
-        used += s.content.chars().count();
-        let mut st = s.style.bg(strip_bg);
+    let glyph = status.map(|ok| if ok { "✓ " } else { "✗ " });
+    let reserved = if glyph.is_some() { 2 } else { 0 };
+    let max_value = strip_width.saturating_sub(reserved);
+
+    let value_text: String = row.value.spans.iter().map(|s| s.content.as_ref()).collect();
+    let value_width = display_width(&value_text);
+    let (shown, used) = if value_width <= max_value {
+        (None, value_width)
+    } else if focused {
+        // Live filter / focused edit: keep the tail so typing stays visible.
+        let tail = trailing_to_width(&value_text, max_value);
+        let w = display_width(&tail);
+        (Some(tail), w)
+    } else {
+        let head = truncate_to_width(&value_text, max_value);
+        let w = display_width(&head);
+        (Some(head), w)
+    };
+
+    if let Some(text) = shown {
+        let mut st = Style::default().bg(strip_bg);
         if focused {
             st = st.fg(Color::Black);
         }
-        spans.push(Span::styled(s.content.clone(), st));
+        spans.push(Span::styled(text, st));
+    } else {
+        for s in &row.value.spans {
+            let mut st = s.style.bg(strip_bg);
+            if focused {
+                st = st.fg(Color::Black);
+            }
+            spans.push(Span::styled(s.content.clone(), st));
+        }
     }
 
-    let glyph = status.map(|ok| if ok { "✓ " } else { "✗ " });
-    let reserved = if glyph.is_some() { 2 } else { 0 };
     let pad = strip_width.saturating_sub(used + reserved);
     if pad > 0 {
         spans.push(Span::styled(" ".repeat(pad), Style::default().bg(strip_bg)));
@@ -906,27 +933,31 @@ fn render_payment_method_dropdown(
             split[0],
         );
     } else {
+        let list_width = split[0].width as usize;
         let items: Vec<ListItem> = rows
             .iter()
             .map(|row| match row {
                 PickerItem::Listed(name) => {
                     let checked = selected_names.iter().any(|s| s.eq_ignore_ascii_case(name));
                     let mark = if checked { "[x]" } else { "[ ]" };
+                    let prefix = format!("{mark} ");
+                    let name_budget = list_width.saturating_sub(display_width(&prefix) + 2);
                     ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("{mark} "),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(name.clone()),
+                        Span::styled(prefix, Style::default().add_modifier(Modifier::BOLD)),
+                        Span::raw(truncate_to_width(name, name_budget)),
                     ]))
                 }
-                PickerItem::Custom(name) => ListItem::new(Line::from(vec![
-                    Span::styled(
-                        "+ add custom: ",
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
-                    Span::styled(name.clone(), Style::default().add_modifier(Modifier::BOLD)),
-                ])),
+                PickerItem::Custom(name) => {
+                    let prefix = "+ add custom: ";
+                    let name_budget = list_width.saturating_sub(display_width(prefix) + 2);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(prefix, Style::default().add_modifier(Modifier::DIM)),
+                        Span::styled(
+                            truncate_to_width(name, name_budget),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                    ]))
+                }
             })
             .collect();
 
@@ -961,8 +992,9 @@ fn render_payment_method_dropdown(
         split[1],
     );
 
-    let caret_x =
-        anchor.x + VALUE_OFFSET as u16 + form.payment_method_picker.filter.chars().count() as u16;
+    let filter_cols = display_width(&form.payment_method_picker.filter)
+        .min((anchor.width as usize).saturating_sub(VALUE_OFFSET + 1));
+    let caret_x = anchor.x + VALUE_OFFSET as u16 + filter_cols as u16;
     f.set_cursor_position((caret_x, anchor.y));
 }
 
@@ -1475,5 +1507,88 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         assert!(buffer_contains(buf, "Payment methods"));
+    }
+
+    #[test]
+    fn field_line_clamps_long_payment_method_to_strip() {
+        let row = Row {
+            field: FormField::PaymentMethod,
+            label: "Method",
+            value: Line::from(format!("custom-{}", "a".repeat(120))),
+            prefix_len: 0,
+            text_len: 0,
+            editable: false,
+        };
+        let strip_width = 24;
+        let line = field_line(&row, false, strip_width, Some(true));
+        assert!(
+            line.width() <= VALUE_OFFSET + strip_width,
+            "line width {} exceeds strip (VALUE_OFFSET + {strip_width})",
+            line.width()
+        );
+        let flat: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(flat.contains("..."), "expected ellipsis truncation: {flat}");
+        assert!(!flat.contains(&"a".repeat(50)));
+    }
+
+    #[test]
+    fn field_line_keeps_tail_when_focused_filter_overflows() {
+        let row = Row {
+            field: FormField::PaymentMethod,
+            label: "Method",
+            value: Line::from(format!("{}TAIL", "z".repeat(80))),
+            prefix_len: 0,
+            text_len: 0,
+            editable: false,
+        };
+        let strip_width = 20;
+        let line = field_line(&row, true, strip_width, Some(true));
+        assert!(line.width() <= VALUE_OFFSET + strip_width);
+        let flat: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            flat.contains("TAIL"),
+            "focused overflow should keep typing tail: {flat}"
+        );
+    }
+
+    #[test]
+    fn long_payment_method_renders_truncated_in_form() {
+        let mut form = FormState::new_default_form();
+        // Unfocused Method row uses head truncation with `...`.
+        form.focused = FormField::Currency;
+        let long = format!("custom-{}", "a".repeat(120));
+        form.payment_method = long.clone();
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_order_form(f, f.area(), &form, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Method"));
+        assert!(buffer_contains(buf, "..."));
+        // The Method strip must not keep the unbroken mid-run on one row.
+        let mut method_row = String::new();
+        for y in 0..buf.area.height {
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf[(x, y)].symbol());
+            }
+            if row.contains("Method") {
+                method_row = row;
+                break;
+            }
+        }
+        assert!(
+            !method_row.is_empty(),
+            "expected a Method row in the form buffer"
+        );
+        assert!(
+            !method_row.contains(&"a".repeat(40)),
+            "Method row still holds a long unbroken run: {method_row}"
+        );
+        assert!(
+            !method_row.contains(&long),
+            "Method row must not contain the full payment method"
+        );
     }
 }

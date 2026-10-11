@@ -478,12 +478,13 @@ Stateful form for publishing buy/sell orders. Supports fixed amounts, market pri
   - **Order details** — three sections with vertically centered content inside the panel:
     - **TRADE**: Type (colored buy/sell dot), Currency (bold cyan code + dim name + `▾ pick`)
     - **PRICING**: Amount (`market` when 0/empty), Fiat min (+ Fiat max when range)
-    - **TERMS**: Method (joined names + `▾ pick`, or `— none —`), Premium, Invoice, Expiry
+    - **TERMS**: Method (joined names + `▾ pick`, or `— none —`), Premium, Invoice, Expiry. Long Method values (and live filter text) are clamped to the value strip via `truncate_to_width` / `trailing_to_width` so they cannot paint into the live-preview column ([#205](https://github.com/MostroP2P/mostrix/issues/205)).
   - **Live preview** — rounded **Order** receipt card with implied `≈ …/BTC` when computable; status dot (`ready` / `fill: …` / `invalid: …`).
   - **Field help** — one-line contextual help for the focused field (`build_field_help`).
   - **Footer** — `Enter` submit / `Tab` focus / `Space` toggle / `Esc` cancel.
 - **Currency dropdown** (`render_currency_dropdown`): modal overlay when `currency_picker.open`; list shows bold ISO code + dim name; title includes accepted count from instance or “common” fallback list.
-- **Payment method dropdown** (`render_payment_method_dropdown`): modal overlay when `payment_method_picker.open`; checkboxes `[x]` / `[ ]` for methods of the current fiat (plus selected custom names); a `+ add custom` row appears when the filter is a new sanitized name. Title is `Payment methods for USD` (or `(default)` when the fiat code is empty).
+- **Payment method dropdown** (`render_payment_method_dropdown`): modal overlay when `payment_method_picker.open`; checkboxes `[x]` / `[ ]` for methods of the current fiat (plus selected custom names); a `+ add custom` row appears when the filter is a new sanitized name (row labels truncated to the popup width). Title is `Payment methods for USD` (or `(default)` when the fiat code is empty).
+- **Order confirmation** (`render_order_confirm`): content is laid out inside the popup border; long payment methods (and invoices) hard-wrap with `wrap_to_width` (up to 4 lines) so they cannot overwrite the frame.
 
 #### Currency metadata (`src/ui/currencies.rs`)
 
