@@ -820,11 +820,14 @@ fn spawn_shared_key_disclosure(
     });
 }
 
-/// Apply a Ctrl+K menu row (Enter after selection) — same confirms as COMMAND Shift shortcuts.
+/// Apply a Ctrl+K menu row (Enter after selection).
 ///
-/// Letter keys only move the highlight; they do not call this. `order_id` is
-/// pinned when the popup opened; never re-read the sidebar index (a refresh can
-/// reorder rows while the modal is open).
+/// Most rows open the same YES/NO confirms as COMMAND Shift chords. Row **I**
+/// copies the pinned order UUID to the clipboard; row **U** opens the Shift+U
+/// refresh confirm (refused for full-privacy trades). Letter keys only move the
+/// highlight; they do not call this. `order_id` is pinned when the popup opened;
+/// never re-read the sidebar index (a refresh can reorder rows while the modal
+/// is open).
 fn apply_trade_action_selection(
     app: &mut AppState,
     selected_index: usize,
@@ -876,6 +879,29 @@ fn apply_trade_action_selection(
         }
         5 => {
             spawn_shared_key_disclosure(order_id, pool, order_result_tx);
+        }
+        6 => {
+            // Copy the full order UUID (admins often ask for it when debugging a trade).
+            if handle_clipboard_copy(order_id.to_string()) {
+                app.mode = UiMode::operation_result(OperationResult::Info(
+                    "Order ID copied to clipboard.".to_string(),
+                ));
+            } else {
+                app.mode = UiMode::operation_result(OperationResult::Error(
+                    "Could not copy order ID to the clipboard.".to_string(),
+                ));
+            }
+        }
+        7 => {
+            let full_privacy = app
+                .order_chat_static
+                .get(&order_id)
+                .is_some_and(|h| h.full_privacy);
+            if let Some(next_mode) =
+                refresh_shortcut_next_mode(&app.mode, Some(selected), full_privacy)
+            {
+                app.mode = next_mode;
+            }
         }
         _ => {}
     }
@@ -3700,6 +3726,34 @@ mod key_handler_tests {
             }
             other => panic!("expected FiatSent confirm, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn trade_action_menu_refresh_row_matches_shift_u() {
+        let order_id = uuid::Uuid::new_v4();
+        assert_eq!(
+            crate::ui::trade_actions_popup::trade_action_index_for_key('U'),
+            Some(7)
+        );
+        match refresh_shortcut_next_mode(
+            &UiMode::UserMode(UserMode::Normal),
+            Some((order_id, Some(Status::Active))),
+            false,
+        ) {
+            Some(UiMode::ViewingMessage(view)) => {
+                assert_eq!(view.order_id, Some(order_id));
+                assert_eq!(view.action, Action::Orders);
+            }
+            other => panic!("expected Orders refresh confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trade_action_menu_copy_order_id_letter_is_i() {
+        assert_eq!(
+            crate::ui::trade_actions_popup::trade_action_index_for_key('I'),
+            Some(6)
+        );
     }
 
     #[test]
