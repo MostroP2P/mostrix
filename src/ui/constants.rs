@@ -158,7 +158,9 @@ pub const HELP_MY_TRADES_CTRL_I_INSERT: &str =
 pub const HELP_MY_TRADES_ESC_COMMAND: &str =
     "Esc: Leave INSERT → COMMAND (draft kept for this order/channel)";
 pub const HELP_MY_TRADES_CTRL_K_ACTIONS: &str =
-    "Ctrl+K: Trade actions — letter selects, Enter confirms (Fiat sent / Release / …)";
+    "Ctrl+K: Trade actions — letter selects, Enter confirms (Fiat sent / Release / Copy order ID / Refresh / …)";
+pub const HELP_MY_TRADES_COPY_ORDER_ID: &str =
+    "Ctrl+K then I: Copy order ID to clipboard (for admin follow-up)";
 pub const HELP_MY_TRADES_PASTE: &str =
     "Ctrl+V / Shift+Insert / right-click: Paste into message (INSERT)";
 pub const HELP_MY_TRADES_SHIFT_C_CANCEL: &str =

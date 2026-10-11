@@ -1,4 +1,8 @@
 //! Ctrl+K trade-actions list for My Trades (INSERT and COMMAND layers).
+//!
+//! Rows cover the COMMAND Shift chords plus **I** (copy order UUID) and **U**
+//! (refresh — same confirm as Shift+U). Letter keys only move the highlight;
+//! Enter applies the selection.
 
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -8,6 +12,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use super::{helpers, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Ordered rows shown in the Ctrl+K trade-actions popup.
+///
+/// Letters match COMMAND Shift chords where those exist (`F`/`R`/`C`/`D`/`V`/`K`/`U`).
+/// `I` copies the order id (no Shift chord — clipboard only).
 pub const TRADE_ACTION_ROWS: &[&str] = &[
     "F  Mark fiat sent",
     "R  Release sats",
@@ -15,6 +22,8 @@ pub const TRADE_ACTION_ROWS: &[&str] = &[
     "D  Open dispute",
     "V  Rate counterparty",
     "K  Reveal Shared key",
+    "I  Copy order ID",
+    "U  Refresh from Mostro",
 ];
 
 #[must_use]
@@ -22,7 +31,10 @@ pub fn trade_action_count() -> usize {
     TRADE_ACTION_ROWS.len()
 }
 
-/// Letter → row index for highlight only (Enter confirms; same letters as COMMAND Shift chords).
+/// Letter → row index for highlight only (Enter applies the row).
+///
+/// Maps the same letters as COMMAND Shift chords, plus `I` (copy order ID) and
+/// `U` (refresh). Unknown letters return `None`.
 #[must_use]
 pub fn trade_action_index_for_key(c: char) -> Option<usize> {
     match c.to_ascii_lowercase() {
@@ -32,6 +44,8 @@ pub fn trade_action_index_for_key(c: char) -> Option<usize> {
         'd' => Some(3),
         'v' => Some(4),
         'k' => Some(5),
+        'i' => Some(6),
+        'u' => Some(7),
         _ => None,
     }
 }
@@ -137,6 +151,8 @@ mod tests {
     fn letter_shortcuts_map_to_rows() {
         assert_eq!(trade_action_index_for_key('F'), Some(0));
         assert_eq!(trade_action_index_for_key('k'), Some(5));
+        assert_eq!(trade_action_index_for_key('I'), Some(6));
+        assert_eq!(trade_action_index_for_key('u'), Some(7));
         assert_eq!(trade_action_index_for_key('x'), None);
     }
 
@@ -149,6 +165,8 @@ mod tests {
         assert!(buffer_contains(buf, "Trade actions"));
         assert!(buffer_contains(buf, "Mark fiat sent"));
         assert!(buffer_contains(buf, "Release sats"));
+        assert!(buffer_contains(buf, "Copy order ID"));
+        assert!(buffer_contains(buf, "Refresh from Mostro"));
         assert!(buffer_contains(buf, "Esc"));
     }
 

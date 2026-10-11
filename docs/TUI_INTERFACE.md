@@ -195,7 +195,7 @@ if let UiMode::OperationResult(result) = &app.mode {
 **Help popup (Ctrl+H)**:
 
 - **Open**: Press **Ctrl+H** in normal or managing-dispute mode to show a context-aware shortcuts overlay for the current tab (Disputes in Progress, Observer, Settings, Orders, etc.). On very narrow terminals the Help body wraps and keeps Actions/Clear discoverable (same skip-fit idea as keycap bars).
-- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows INSERT/COMMAND (`i` / Esc; SERBERO read-only), **Ctrl+K** Actions (letter selects, Enter confirms), Tab/Enter/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes Ctrl+I/Esc INSERT/COMMAND, **Ctrl+K** trade actions (letter selects, Enter confirms), PgUp/PgDn/End chat scroll, **Shift+K** (reveal Shared key for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, it lists Enter Load, **Ctrl+L** Clear (zeroizes attachment keys), **Esc** Dismiss error, **Ctrl+K** Actions (letter selects, Enter confirms), paste, scroll, and save-attachment shortcuts (Left/Right still change tabs).
+- **Content**: The popup lists all relevant key bindings for that tab; e.g. in Disputes in Progress it shows INSERT/COMMAND (`i` / Esc; SERBERO read-only), **Ctrl+K** Actions (letter selects, Enter confirms), Tab/Enter/Shift+F, scroll keys, and Ctrl+S to open the save-attachment list when applicable. On **My Trades** it includes Ctrl+I/Esc INSERT/COMMAND, **Ctrl+K** trade actions (letter selects, Enter confirms — including **I** copy order ID and **U**/Shift+U refresh), PgUp/PgDn/End chat scroll, **Shift+K** (reveal Shared key for solvers), **Ctrl+S** (save attachment list), **Ctrl+O** (send file picker), and **Ctrl+Shift+O** (retry DM after upload ok / send failed). On **Observer**, it lists Enter Load, **Ctrl+L** Clear (zeroizes attachment keys), **Esc** Dismiss error, **Ctrl+K** Actions (letter selects, Enter confirms), paste, scroll, and save-attachment shortcuts (Left/Right still change tabs).
 - **Close**: **Esc**, **Enter**, or **Ctrl+H** close the popup; other keys are absorbed while it is open.
 - **Source**: `src/ui/help_popup.rs` (rendering), `src/ui/key_handler/mod.rs` (Ctrl+H and close handling).
 
@@ -546,13 +546,14 @@ The My Trades workspace (`src/ui/tabs/order_in_progress_tab.rs`) now shows riche
 - **Empty states**: sidebar/main panel copy is clearer ("No active orders yet"), and the help hint remains visible in the footer.
 - **Keycap command bar + footer shortcuts (width-aware)**:
   - **INSERT / COMMAND**: **Ctrl+I** / **i** / Insert enter INSERT (type freely); **Esc** returns to COMMAND (draft kept). Keycaps show `i Write` / `Enter Send · Esc Commands` accordingly. Channel/file/retry controls use wrapping compact keycap rows (`shortcut_bar_rows`) so every applicable action stays discoverable at supported full-shell sizes including **60×15**.
-  - **Ctrl+K Actions**: trade-action list (Cancel / Fiat sent / Release / Dispute / …) — same outcomes as COMMAND Shift chords; **letter selects, Enter confirms** (not immediate execute).
+  - **Ctrl+K Actions**: trade-action list (Cancel / Fiat sent / Release / Dispute / Rate / Shared key / **Copy order ID** / **Refresh from Mostro**) — same outcomes as COMMAND Shift chords where those exist; **letter selects, Enter confirms** (not immediate execute). **I** copies the full order UUID to the clipboard ([#206](https://github.com/MostroP2P/mostrix/issues/206)); **U** opens the same refresh confirm as **Shift+U**.
+  - **COMMAND keycap bar** (wide panes): shows **Shift+U Refresh** next to Actions so the refresh shortcut stays discoverable without opening Help.
   - **Shift+C** cooperative cancel (YES/NO popup; COMMAND).
   - **Shift+F** mark fiat sent (YES/NO popup; COMMAND).
   - **Shift+R** release sats (YES/NO popup; COMMAND).
   - **Shift+D** open dispute (COMMAND).
   - **Shift+V** rate counterparty (opens 1–5 star rating picker).
-  - **Shift+U** refresh order details from Mostro (COMMAND; refused for full-privacy trades — identity-scoped `Action::Orders` must not link a private order id).
+  - **Shift+U** refresh order details from Mostro (COMMAND or Ctrl+K → **U**; refused for full-privacy trades — identity-scoped `Action::Orders` must not link a private order id).
   - **Shift+K** reveal Shared key (read-only grant for solvers; never the signing key). Opens a popup where **C** copies the Shared key to the clipboard.
   - **PgUp/PgDn** scroll chat history; **End** jump to bottom.
   - **Ctrl+S** save attachment (when the selected order has attachments).
