@@ -207,7 +207,7 @@ mod tests {
                 "a".repeat(64)
             ),
             "🔗 Relays: wss://relay.mostro.network, wss://nos.lol".to_string(),
-            "💱 Currencies: USD, EUR, ARS - Filters: All currencies are accepted | Shift+F: Order filters | Shift+X: Clear order filters".to_string(),
+            "💱 Currencies: USD, EUR, ARS - Filters: All currencies are accepted".to_string(),
         ]
     }
 

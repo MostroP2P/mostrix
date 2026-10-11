@@ -1190,19 +1190,12 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             _ => "All (from Mostro instance)".to_string(),
         };
-        // Currencies filters string
+        // Currencies filters string (settings allow-list; Order book Shift+F/X
+        // hints live only in the Orders filter bar so long currency lists are
+        // not truncated by a duplicate shortcut strip).
         let currencies_filter_str = match current_settings.currencies_filter.is_empty() {
             true => "All currencies are accepted".to_string(),
             false => current_settings.currencies_filter.join(", "),
-        };
-        let order_filter_shortcuts = if app.user_role == UserRole::User
-            && matches!(
-                app.active_tab,
-                crate::ui::navigation::Tab::User(crate::ui::navigation::UserTab::Orders)
-            ) {
-            " | Shift+F: Order filters | Shift+X: Clear order filters"
-        } else {
-            ""
         };
         // Mostro instance name from the kind-38385 `y` tag.
         let mostro_alias = match app.mostro_info.as_ref() {
@@ -1220,8 +1213,8 @@ async fn main() -> Result<(), anyhow::Error> {
             ),
             format!("🔗 Relays: {}", relays_str),
             format!(
-                "💱 Currencies: {} - Filters: {}{}",
-                mostro_instance_currencies, currencies_filter_str, order_filter_shortcuts
+                "💱 Currencies: {} - Filters: {}",
+                mostro_instance_currencies, currencies_filter_str
             ),
         ];
         app.terminal_alert

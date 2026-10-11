@@ -981,7 +981,7 @@ mod tests {
                 "a".repeat(64)
             ),
             "🔗 Relays: wss://relay.mostro.network, wss://nos.lol".to_string(),
-            "💱 Currencies: USD, EUR - Filters: All currencies are accepted | Shift+F: Order filters | Shift+X: Clear order filters".to_string(),
+            "💱 Currencies: USD, EUR - Filters: All currencies are accepted".to_string(),
         ];
         for width in [80, 120] {
             let mut app = AppState::new(UserRole::User);
