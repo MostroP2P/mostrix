@@ -730,6 +730,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_MY_TRADES_CTRL_I_INSERT.to_string(),
                 HELP_MY_TRADES_ESC_COMMAND.to_string(),
                 HELP_MY_TRADES_CTRL_K_ACTIONS.to_string(),
+                HELP_MY_TRADES_COPY_ORDER_ID.to_string(),
                 HELP_MY_TRADES_PASTE.to_string(),
                 HELP_CHAT_COPY.to_string(),
                 HELP_CHAT_COPY_KEYS.to_string(),

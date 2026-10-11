@@ -4,7 +4,8 @@
 //! file / retry controls use wrapping keycap rows (compact labels when narrow)
 //! so every applicable action stays discoverable at supported full-shell sizes
 //! (including 60×15). Trade actions stay in Ctrl+K (letter selects, Enter
-//! confirms). Ctrl+H and Shift+H help overlays are styled in
+//! confirms — including copy order ID and refresh). Wide COMMAND bars also
+//! show **Shift+U Refresh**. Ctrl+H and Shift+H help overlays are styled in
 //! [`crate::ui::help_popup`].
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
@@ -107,6 +108,10 @@ fn shortcut_bar(width: u16, hints: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
+/// One-row INSERT/COMMAND keycap strip for My Trades.
+///
+/// INSERT never lists Shift chords. COMMAND keeps Actions early on narrow panes;
+/// at width ≥ 56 it also shows **Shift+U Refresh** (same action as Ctrl+K → U).
 fn order_command_bar(width: u16, insert: bool) -> Line<'static> {
     // Keep Actions early on narrow panes (60×15 main ~46 cols) so skip-fit cannot
     // drop it behind a long "Esc Commands" group.
@@ -134,12 +139,24 @@ fn order_command_bar(width: u16, insert: bool) -> Line<'static> {
                 ],
             )
         }
+    } else if width < 56 {
+        // Narrow COMMAND: keep Actions discoverable; Shift+U lives in Ctrl+K too.
+        shortcut_bar(
+            width,
+            &[
+                ("i", "Write"),
+                ("Ctrl+K", "Actions"),
+                ("Ctrl+H", "Help"),
+                ("Ctrl+C", "Copy"),
+            ],
+        )
     } else {
         shortcut_bar(
             width,
             &[
                 ("i", "Write"),
                 ("Ctrl+K", "Actions"),
+                ("Shift+U", "Refresh"),
                 ("Ctrl+H", "Help"),
                 ("Ctrl+C", "Copy"),
             ],
@@ -1162,13 +1179,41 @@ mod tests {
     }
 
     #[test]
+    fn command_bar_shows_shift_u_refresh_on_wide_command_layer() {
+        let line = super::order_command_bar(80, false);
+        let text = line.to_string();
+        assert!(
+            text.contains("Shift+U") && text.contains("Refresh"),
+            "wide COMMAND bar should advertise Shift+U Refresh: {text}"
+        );
+        let narrow = super::order_command_bar(40, false).to_string();
+        assert!(
+            !narrow.contains("Shift+U"),
+            "narrow COMMAND bar keeps Actions without Shift+U: {narrow}"
+        );
+    }
+
+    #[test]
     fn command_bar_and_copy_controls_fit_narrow_widths() {
         for width in 0..120 {
             for insert in [false, true] {
                 let line = super::order_command_bar(width, insert);
                 assert!(line.width() <= usize::from(width));
                 let text = line.to_string();
-                assert!(!text.contains("Shift+"));
+                if insert {
+                    assert!(
+                        !text.contains("Shift+"),
+                        "INSERT bar must not list Shift chords: {text}"
+                    );
+                } else if width >= 56 {
+                    // Wide COMMAND surfaces Shift+U Refresh (also in Ctrl+K Actions).
+                    if text.contains("Refresh") {
+                        assert!(
+                            text.contains("Shift+U"),
+                            "Refresh keycap must be Shift+U at width {width}: {text}"
+                        );
+                    }
+                }
                 if width >= 28 {
                     if insert {
                         assert!(
