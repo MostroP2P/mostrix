@@ -3,7 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::ui::helpers::format_premium;
+use crate::ui::helpers::{display_width, format_premium, truncate_to_width};
 
 use super::{TakeOrderState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
@@ -136,11 +136,16 @@ pub fn render_order_take(f: &mut ratatui::Frame, take_state: &TakeOrderState) {
         inner_chunks[5],
     );
 
+    let pm_label = "Payment Method: ";
+    let pm_budget = (popup_inner.width as usize)
+        .saturating_sub(display_width(pm_label))
+        .saturating_sub(2)
+        .max(1);
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw("Payment Method: "),
+            Span::raw(pm_label),
             Span::styled(
-                &take_state.order.payment_method,
+                truncate_to_width(&take_state.order.payment_method, pm_budget),
                 Style::default().fg(PRIMARY_COLOR),
             ),
         ]))

@@ -1,9 +1,96 @@
 use chrono::{DateTime, Local, Utc};
 use mostro_core::prelude::{DisputeStatus, UserInfo};
 use ratatui::style::Color;
+use ratatui::text::Span;
 use std::str::FromStr;
 
 use crate::models::AdminDispute;
+
+/// Display-column width of `s` (Unicode-aware via ratatui).
+#[must_use]
+pub fn display_width(s: &str) -> usize {
+    Span::raw(s).width()
+}
+
+/// Truncate `s` to at most `max` display columns, appending `...` when cut.
+#[must_use]
+pub fn truncate_to_width(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if display_width(s) <= max {
+        return s.to_string();
+    }
+    if max <= 3 {
+        return ".".repeat(max);
+    }
+    let budget = max - 3;
+    let mut out = String::new();
+    let mut w = 0;
+    for ch in s.chars() {
+        let cw = display_width(&ch.to_string());
+        if w + cw > budget {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push_str("...");
+    out
+}
+
+/// Keep the trailing part of `s` that fits in `max` display columns (live input).
+#[must_use]
+pub fn trailing_to_width(s: &str, max: usize) -> String {
+    if max == 0 || s.is_empty() {
+        return String::new();
+    }
+    if display_width(s) <= max {
+        return s.to_string();
+    }
+    let mut best = s.len();
+    for (idx, _) in s.char_indices().rev() {
+        if display_width(&s[idx..]) <= max {
+            best = idx;
+        } else {
+            break;
+        }
+    }
+    s[best..].to_string()
+}
+
+/// Hard-wrap `s` into lines of at most `max` display columns (breaks mid-word).
+#[must_use]
+pub fn wrap_to_width(s: &str, max: usize) -> Vec<String> {
+    if max == 0 {
+        return vec![s.to_string()];
+    }
+    if s.is_empty() {
+        return vec![String::new()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut w = 0;
+    for ch in s.chars() {
+        let cw = display_width(&ch.to_string());
+        if cw > max {
+            continue;
+        }
+        if w + cw > max && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+            w = 0;
+        }
+        current.push(ch);
+        w += cw;
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
 
 /// Formats user rating with star visualization.
 /// Rating must be in 0-5 range. Returns formatted string with stars and stats.
@@ -179,6 +266,40 @@ mod short_order_id_tests {
     #[test]
     fn none_renders_unknown() {
         assert_eq!(short_order_id(None), "unknown");
+    }
+}
+
+#[cfg(test)]
+mod width_fit_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_to_width_keeps_short_strings() {
+        assert_eq!(truncate_to_width("SEPA", 10), "SEPA");
+    }
+
+    #[test]
+    fn truncate_to_width_appends_ellipsis() {
+        let long = "a".repeat(40);
+        let out = truncate_to_width(&long, 10);
+        assert_eq!(display_width(&out), 10);
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn trailing_to_width_keeps_end_of_input() {
+        let long = format!("{}TAIL", "x".repeat(30));
+        let out = trailing_to_width(&long, 8);
+        assert_eq!(display_width(&out), 8);
+        assert!(out.ends_with("TAIL"));
+    }
+
+    #[test]
+    fn wrap_to_width_breaks_unbroken_runs() {
+        let long = "a".repeat(25);
+        let lines = wrap_to_width(&long, 10);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| display_width(l) <= 10));
     }
 }
 
