@@ -450,8 +450,8 @@ fn compact_orders_help(narrow: bool, inner_width: u16, inner_height: u16) -> Vec
 
     [
         "↑↓ / Enter: Select / take order",
-        "Shift+F / Shift+X: Edit / clear filters",
-        "Filters: Kind, Fiat, Premium (↑↓ step %; Tab fields)",
+        "Shift+F / Shift+X: Edit filters/sort / clear filters",
+        "Fields: Kind, Fiat, Premium, Sort by, Direction",
     ]
     .into_iter()
     .map(help_shortcut_line)

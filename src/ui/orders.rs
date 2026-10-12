@@ -91,10 +91,18 @@ pub enum OrderBookFilterField {
     Kind,
     FiatCurrency,
     Premium,
+    SortBy,
+    SortDirection,
 }
 
 impl OrderBookFilterField {
-    pub const ALL: [Self; 3] = [Self::Kind, Self::FiatCurrency, Self::Premium];
+    pub const ALL: [Self; 5] = [
+        Self::Kind,
+        Self::FiatCurrency,
+        Self::Premium,
+        Self::SortBy,
+        Self::SortDirection,
+    ];
 
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -102,6 +110,8 @@ impl OrderBookFilterField {
             Self::Kind => "Buy/Sell",
             Self::FiatCurrency => "Fiat currency",
             Self::Premium => "Premium",
+            Self::SortBy => "Sort by",
+            Self::SortDirection => "Direction",
         }
     }
 
@@ -192,6 +202,18 @@ impl OrderBookSortKey {
             Self::Kind => Self::Created,
         }
     }
+
+    #[must_use]
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Created => Self::Kind,
+            Self::FiatAmount => Self::Created,
+            Self::Premium => Self::FiatAmount,
+            Self::FiatCurrency => Self::Premium,
+            Self::PaymentMethod => Self::FiatCurrency,
+            Self::Kind => Self::PaymentMethod,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -235,6 +257,7 @@ impl OrderBookSort {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OrderBookFilterState {
     pub filters: OrderBookFilters,
+    pub sort: OrderBookSort,
     pub focused: OrderBookFilterField,
     /// Searchable currency dropdown (Create Order style).
     pub currency_picker: CurrencyPicker,
@@ -246,8 +269,19 @@ impl OrderBookFilterState {
     /// Draft editor seeded from the applied session filters.
     #[must_use]
     pub fn from_filters(filters: OrderBookFilters, inline: bool) -> Self {
+        Self::from_filters_and_sort(filters, OrderBookSort::default(), inline)
+    }
+
+    /// Draft editor seeded from the applied session filters and sort.
+    #[must_use]
+    pub fn from_filters_and_sort(
+        filters: OrderBookFilters,
+        sort: OrderBookSort,
+        inline: bool,
+    ) -> Self {
         Self {
             filters,
+            sort,
             focused: OrderBookFilterField::Kind,
             currency_picker: CurrencyPicker::default(),
             inline,

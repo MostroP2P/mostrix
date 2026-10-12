@@ -329,10 +329,11 @@ fn split_filter_and_table(area: Rect, show_bar: bool, use_inline: bool) -> (Opti
 
 fn render_order_filter_bar(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
     let summary = app.order_filters.summary();
+    let sort_summary = app.order_sort.summary();
     let hint = if area.width < 80 {
-        "Shift+F filters | Shift+X clear"
+        "Shift+F filters/sort | Shift+X clear"
     } else {
-        "Shift+F: edit filters | Shift+X: clear filters | Enter: take/cancel selected order"
+        "Shift+F: edit filters/sort | Shift+X: clear filters | Enter: take/cancel selected order"
     };
     let text = vec![
         Line::from(vec![
@@ -343,13 +344,15 @@ fn render_order_filter_bar(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(summary, Style::default().fg(Color::White)),
+            Span::styled("  Sort: ", Style::default().fg(PRIMARY_COLOR)),
+            Span::styled(sort_summary, Style::default().fg(Color::White)),
         ]),
         Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
     ];
     f.render_widget(
         Paragraph::new(text).block(
             Block::default()
-                .title("Order Filters")
+                .title("Order Filters & Sort")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -365,7 +368,7 @@ fn render_order_filter_editable_bar(
     state: &OrderBookFilterState,
 ) {
     let block = Block::default()
-        .title(" Order Filters (editing) ")
+        .title(" Order Filters & Sort (editing) ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -386,6 +389,8 @@ fn render_order_filter_editable_bar(
             OrderBookFilterField::Kind => "Kind",
             OrderBookFilterField::FiatCurrency => "Fiat",
             OrderBookFilterField::Premium => "Premium",
+            OrderBookFilterField::SortBy => "Sort",
+            OrderBookFilterField::SortDirection => "Dir",
         };
         let text = format!("{label}:{value}");
         if selected {
@@ -408,6 +413,10 @@ fn render_order_filter_editable_bar(
             chip(OrderBookFilterField::FiatCurrency),
             Span::raw(" "),
             chip(OrderBookFilterField::Premium),
+            Span::raw(" "),
+            chip(OrderBookFilterField::SortBy),
+            Span::raw(" "),
+            chip(OrderBookFilterField::SortDirection),
         ])),
         rows[0],
     );
@@ -438,6 +447,10 @@ fn filter_field_display_colored(
             crate::ui::orders::order_book_premium_label(state.filters.premium),
             crate::ui::orders::order_book_premium_color(state.filters.premium),
         ),
+        OrderBookFilterField::SortBy => (state.sort.key.label().to_string(), Color::White),
+        OrderBookFilterField::SortDirection => {
+            (state.sort.direction.label().to_string(), Color::White)
+        }
     }
 }
 
@@ -585,7 +598,7 @@ pub fn render_order_filter_popup(f: &mut ratatui::Frame, state: &OrderBookFilter
     f.render_widget(
         Paragraph::new(lines).alignment(Alignment::Left).block(
             Block::default()
-                .title("Order Filters")
+                .title("Order Filters & Sort")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -671,10 +684,15 @@ fn compact_order_filter_popup_lines(
 fn active_filters_line(state: &OrderBookFilterState, inner_width: usize) -> Line<'static> {
     if state.filters.has_active_filters() {
         let summary_width = inner_width.saturating_sub("Active: ".len());
+        let summary = format!(
+            "{} | sort={}",
+            state.filters.summary(),
+            state.sort.summary()
+        );
         Line::from(vec![
             Span::styled("Active: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                truncate_for_cell(&state.filters.summary(), summary_width)
+                truncate_for_cell(&summary, summary_width)
                     .trim_end()
                     .to_string(),
                 Style::default()
@@ -683,13 +701,11 @@ fn active_filters_line(state: &OrderBookFilterState, inner_width: usize) -> Line
             ),
         ])
     } else {
+        let summary = format!("Active: no filters. Sort: {}", state.sort.summary());
         Line::from(Span::styled(
-            truncate_for_cell(
-                "Active: no filters. Set fields below, then press Enter.",
-                inner_width,
-            )
-            .trim_end()
-            .to_string(),
+            truncate_for_cell(&summary, inner_width)
+                .trim_end()
+                .to_string(),
             Style::default().fg(Color::DarkGray),
         ))
     }
@@ -786,6 +802,8 @@ fn focused_field_hint_line(field: OrderBookFilterField, inner_width: usize) -> L
         OrderBookFilterField::Premium => {
             "↑↓ step premium by 1% (+ green / 0 white / − red). Backspace clears to Any."
         }
+        OrderBookFilterField::SortBy => "↑↓ or Space cycles the order-book sort key.",
+        OrderBookFilterField::SortDirection => "↑↓ or Space toggles ascending / descending.",
     };
     Line::from(vec![
         Span::styled("Hint: ", Style::default().fg(PRIMARY_COLOR)),
@@ -832,6 +850,8 @@ fn filter_field_value(state: &OrderBookFilterState, field: OrderBookFilterField)
         OrderBookFilterField::Premium => {
             crate::ui::orders::order_book_premium_label(state.filters.premium)
         }
+        OrderBookFilterField::SortBy => state.sort.key.label().to_string(),
+        OrderBookFilterField::SortDirection => state.sort.direction.label().to_string(),
     }
 }
 
@@ -926,7 +946,7 @@ mod tests {
         assert!(buffer_contains(buf, "Filters:"));
         assert!(buffer_contains(buf, "fiat=USD"));
         assert!(buffer_contains(buf, "premium=+3%"));
-        assert!(buffer_contains(buf, "Shift+F: edit filters"));
+        assert!(buffer_contains(buf, "Shift+F: edit filters/sort"));
     }
 
     #[test]
@@ -1297,12 +1317,12 @@ mod tests {
             .unwrap();
 
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "Order Filters (editing)"));
+        assert!(buffer_contains(buf, "Order Filters & Sort (editing)"));
         assert!(buffer_contains(buf, "Kind:"));
         assert!(buffer_contains(buf, "Fiat:USD▾"));
         assert!(buffer_contains(buf, "Premium:"));
         assert!(buffer_contains(buf, "Tab field"));
-        assert!(!buffer_contains(buf, "Shift+F: edit filters"));
+        assert!(!buffer_contains(buf, "Shift+F: edit filters/sort"));
     }
 
     #[test]
@@ -1322,7 +1342,7 @@ mod tests {
             .unwrap();
 
         let buf = terminal.backend().buffer();
-        assert!(!buffer_contains(buf, "Order Filters (editing)"));
+        assert!(!buffer_contains(buf, "Order Filters & Sort (editing)"));
         assert!(!buffer_contains(buf, "Filters:"));
         assert!(buffer_contains(buf, "SEPA"));
     }
@@ -1344,7 +1364,7 @@ mod tests {
             .unwrap();
 
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "Order Filters (editing)"));
+        assert!(buffer_contains(buf, "Order Filters & Sort (editing)"));
         assert!(buffer_contains(buf, "Fiat:EUR▾"));
         assert!(buffer_contains(buf, "No offers match"));
     }
@@ -1372,7 +1392,7 @@ mod tests {
             other => panic!("expected OrderFilters, got {other:?}"),
         }
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "Order Filters (editing)"));
+        assert!(buffer_contains(buf, "Order Filters & Sort (editing)"));
         assert!(buffer_contains(buf, "No offers found"));
     }
 
