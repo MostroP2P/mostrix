@@ -946,6 +946,8 @@ mod tests {
         assert!(buffer_contains(buf, "Filters:"));
         assert!(buffer_contains(buf, "fiat=USD"));
         assert!(buffer_contains(buf, "premium=+3%"));
+        assert!(buffer_contains(buf, "Sort:"));
+        assert!(buffer_contains(buf, "Created Descending"));
         assert!(buffer_contains(buf, "Shift+F: edit filters/sort"));
     }
 
@@ -968,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn order_filter_popup_lists_kind_fiat_and_premium() {
+    fn order_filter_popup_lists_filter_and_sort_fields() {
         let backend = TestBackend::new(90, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = OrderBookFilterState::default();
@@ -982,7 +984,11 @@ mod tests {
         assert!(buffer_contains(buf, "Buy/Sell"));
         assert!(buffer_contains(buf, "Fiat currency"));
         assert!(buffer_contains(buf, "Premium"));
+        assert!(buffer_contains(buf, "Sort by"));
+        assert!(buffer_contains(buf, "Direction"));
         assert!(buffer_contains(buf, "-2%"));
+        assert!(buffer_contains(buf, "Created"));
+        assert!(buffer_contains(buf, "Descending"));
         assert!(buffer_contains(buf, "Shift+X Clear"));
         assert!(!buffer_contains(buf, "Payment method"));
         assert!(!buffer_contains(buf, "Created within"));
@@ -1321,6 +1327,8 @@ mod tests {
         assert!(buffer_contains(buf, "Kind:"));
         assert!(buffer_contains(buf, "Fiat:USD▾"));
         assert!(buffer_contains(buf, "Premium:"));
+        assert!(buffer_contains(buf, "Sort:Created"));
+        assert!(buffer_contains(buf, "Dir:Descending"));
         assert!(buffer_contains(buf, "Tab field"));
         assert!(!buffer_contains(buf, "Shift+F: edit filters/sort"));
     }

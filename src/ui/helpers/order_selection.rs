@@ -533,6 +533,45 @@ mod tests {
     }
 
     #[test]
+    fn move_selection_follows_sorted_projection() {
+        let low = Uuid::new_v4();
+        let mid = Uuid::new_v4();
+        let high = Uuid::new_v4();
+        let orders = vec![
+            SmallOrder {
+                fiat_amount: 300,
+                ..order(high, "USD", "high")
+            },
+            SmallOrder {
+                fiat_amount: 100,
+                ..order(low, "USD", "low")
+            },
+            SmallOrder {
+                fiat_amount: 200,
+                ..order(mid, "USD", "mid")
+            },
+        ];
+        let mut app = AppState::new(UserRole::User);
+        app.order_sort = OrderBookSort {
+            key: OrderBookSortKey::FiatAmount,
+            direction: OrderBookSortDirection::Ascending,
+        };
+
+        move_book_order_selection(&mut app, &orders, 1);
+        assert_eq!(
+            app.selected_order_id,
+            Some(mid),
+            "selection starts from first sorted row, then moves down"
+        );
+
+        move_book_order_selection(&mut app, &orders, 1);
+        assert_eq!(app.selected_order_id, Some(high));
+
+        move_book_order_selection(&mut app, &orders, -1);
+        assert_eq!(app.selected_order_id, Some(mid));
+    }
+
+    #[test]
     fn empty_filtered_list_yields_no_selection() {
         let orders = vec![order(Uuid::new_v4(), "USD", "sepa")];
         let mut app = AppState::new(UserRole::User);
