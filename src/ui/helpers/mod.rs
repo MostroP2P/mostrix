@@ -64,9 +64,9 @@ pub use order_chat_projection::{
     order_chat_list_item_from_db_order, OrderChatListItem,
 };
 pub use order_selection::{
-    get_filtered_book_orders, move_book_order_selection, order_passes_currency_filter,
-    order_passes_order_filters, order_passes_order_filters_at, selected_book_display_idx,
-    selected_filtered_book_order,
+    get_filtered_book_orders, get_sorted_filtered_book_orders, move_book_order_selection,
+    order_passes_currency_filter, order_passes_order_filters, order_passes_order_filters_at,
+    selected_book_display_idx, selected_filtered_book_order,
 };
 pub use qr::{encode_qr, encode_qr_fitting, qr_payload, QrView};
 pub use startup::{

@@ -157,6 +157,81 @@ impl OrderBookFilters {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OrderBookSortKey {
+    #[default]
+    Created,
+    FiatAmount,
+    Premium,
+    FiatCurrency,
+    PaymentMethod,
+    Kind,
+}
+
+impl OrderBookSortKey {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Created => "Created",
+            Self::FiatAmount => "Fiat amount",
+            Self::Premium => "Premium",
+            Self::FiatCurrency => "Fiat",
+            Self::PaymentMethod => "Payment method",
+            Self::Kind => "Buy/Sell",
+        }
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Created => Self::FiatAmount,
+            Self::FiatAmount => Self::Premium,
+            Self::Premium => Self::FiatCurrency,
+            Self::FiatCurrency => Self::PaymentMethod,
+            Self::PaymentMethod => Self::Kind,
+            Self::Kind => Self::Created,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OrderBookSortDirection {
+    #[default]
+    Descending,
+    Ascending,
+}
+
+impl OrderBookSortDirection {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Descending => "Descending",
+            Self::Ascending => "Ascending",
+        }
+    }
+
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Descending => Self::Ascending,
+            Self::Ascending => Self::Descending,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OrderBookSort {
+    pub key: OrderBookSortKey,
+    pub direction: OrderBookSortDirection,
+}
+
+impl OrderBookSort {
+    #[must_use]
+    pub fn summary(self) -> String {
+        format!("{} {}", self.key.label(), self.direction.label())
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OrderBookFilterState {
     pub filters: OrderBookFilters,

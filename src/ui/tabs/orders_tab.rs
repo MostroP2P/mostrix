@@ -11,8 +11,8 @@ use ratatui::widgets::{
 
 use crate::ui::currencies::{filter_options, resolve_options};
 use crate::ui::helpers::{
-    format_local_timestamp, format_premium, get_filtered_book_orders, render_table_list_scrollbar,
-    selected_book_display_idx,
+    format_local_timestamp, format_premium, get_sorted_filtered_book_orders,
+    render_table_list_scrollbar, selected_book_display_idx,
 };
 use crate::ui::orders::{orders_filter_inline_layout, OrderBookFilterField, OrderBookFilterState};
 use crate::ui::{apply_kind_color, AppState, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
@@ -101,8 +101,12 @@ pub fn render_orders_tab(
         return;
     }
 
-    let filtered =
-        get_filtered_book_orders(&orders_lock, &app.currencies_filter, &app.order_filters);
+    let filtered = get_sorted_filtered_book_orders(
+        &orders_lock,
+        &app.currencies_filter,
+        &app.order_filters,
+        &app.order_sort,
+    );
     let use_inline = orders_filter_inline_layout(area.width, area.height);
     if let UiMode::OrderFilters(ref mut state) = app.mode {
         state.inline = use_inline;
