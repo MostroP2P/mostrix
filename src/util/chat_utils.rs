@@ -77,6 +77,18 @@ pub fn keys_from_shared_hex(hex: &str) -> Option<Keys> {
         .map(|shared| shared.keys().clone())
 }
 
+/// Hex length of a disclosed 32-byte `K_conv` secret.
+const SHARED_KEY_HEX_LEN: usize = 64;
+
+/// Pull the 64-char hex `K_conv` out of pasted text such as `Shared key: <hex>`
+/// (the Mostro mobile share format). Returns the first run of exactly 64 ASCII
+/// hex digits; longer hex runs never match, so they are not silently truncated.
+pub fn extract_shared_key_hex(input: &str) -> Option<&str> {
+    input
+        .split(|c: char| !c.is_ascii_hexdigit())
+        .find(|run| run.len() == SHARED_KEY_HEX_LEN)
+}
+
 /// Parse optional Observer `pub(K_sign)` locator (hex or bech32). Empty → `None`.
 pub fn parse_optional_sign_pubkey(s: &str) -> Result<Option<PublicKey>, anyhow::Error> {
     let s = s.trim();
@@ -654,6 +666,35 @@ pub async fn send_user_order_chat_message_via_shared_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SAMPLE_SHARED_KEY: &str =
+        "23e9ba260f0e8ba1ea94e6aac24e58b19f0041b9fda33c8f24a7028f0b9df558";
+
+    #[test]
+    fn extract_shared_key_hex_strips_mobile_share_label() {
+        let pasted = format!("Shared key: {SAMPLE_SHARED_KEY}");
+        assert_eq!(extract_shared_key_hex(&pasted), Some(SAMPLE_SHARED_KEY));
+    }
+
+    #[test]
+    fn extract_shared_key_hex_accepts_bare_and_padded_hex() {
+        assert_eq!(
+            extract_shared_key_hex(SAMPLE_SHARED_KEY),
+            Some(SAMPLE_SHARED_KEY)
+        );
+        let padded = format!("  \t{SAMPLE_SHARED_KEY}\n ");
+        assert_eq!(extract_shared_key_hex(&padded), Some(SAMPLE_SHARED_KEY));
+    }
+
+    #[test]
+    fn extract_shared_key_hex_rejects_wrong_length_hex_runs() {
+        assert_eq!(extract_shared_key_hex(""), None);
+        assert_eq!(extract_shared_key_hex("Shared key: abc"), None);
+        assert_eq!(extract_shared_key_hex(&SAMPLE_SHARED_KEY[..63]), None);
+        // A longer hex blob must not be silently truncated to 64 chars.
+        let too_long = format!("{SAMPLE_SHARED_KEY}a");
+        assert_eq!(extract_shared_key_hex(&too_long), None);
+    }
 
     /// Different counterparty pubkeys must produce different shared keys (ECDH output is unique per peer).
     #[test]

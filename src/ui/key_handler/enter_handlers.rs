@@ -1738,15 +1738,18 @@ fn handle_enter_normal_mode(app: &mut AppState, ctx: &super::EnterKeyContext<'_>
         // against known admin/party inner signers from taken disputes.
         // Own a Zeroizing copy in the fetch task so Clear / tab exit / role switch
         // that wipe AppState cannot leave a bare String clone until the task ends.
-        let key_str = Zeroizing::new(app.observer_shared_key_input.trim().to_string());
-        if key_str.is_empty() {
+        if app.observer_shared_key_input.trim().is_empty() {
             let msg = "Shared key is required".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
             return;
         }
 
-        if crate::util::chat_utils::keys_from_shared_hex(key_str.as_str()).is_none() {
+        // Accept pasted labels like `Shared key: <hex>` (Mostro mobile share text):
+        // keep only the 64-char hex so the field shows exactly what gets loaded.
+        let has_hex = app.normalize_observer_shared_key_input();
+        let key_str = Zeroizing::new(app.observer_shared_key_input.clone());
+        if !has_hex || keys_from_shared_hex(key_str.as_str()).is_none() {
             let msg = "Shared key must be a valid 64-char hex secret (32 bytes)".to_string();
             app.observer_error = Some(msg.clone());
             app.mode = UiMode::operation_result(OperationResult::Error(msg));
