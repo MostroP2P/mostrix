@@ -81,12 +81,16 @@ pub fn keys_from_shared_hex(hex: &str) -> Option<Keys> {
 const SHARED_KEY_HEX_LEN: usize = 64;
 
 /// Pull the 64-char hex `K_conv` out of pasted text such as `Shared key: <hex>`
-/// (the Mostro mobile share format). Returns the first run of exactly 64 ASCII
-/// hex digits; longer hex runs never match, so they are not silently truncated.
+/// (the Mostro mobile share format). Returns the run of exactly 64 ASCII hex
+/// digits; longer hex runs never match, so they are not silently truncated.
+/// Two different 64-char runs (a key pasted after an old one without clearing
+/// the field) are ambiguous and return `None` rather than loading the old key.
 pub fn extract_shared_key_hex(input: &str) -> Option<&str> {
-    input
+    let mut runs = input
         .split(|c: char| !c.is_ascii_hexdigit())
-        .find(|run| run.len() == SHARED_KEY_HEX_LEN)
+        .filter(|run| run.len() == SHARED_KEY_HEX_LEN);
+    let key = runs.next()?;
+    runs.all(|run| run == key).then_some(key)
 }
 
 /// Parse optional Observer `pub(K_sign)` locator (hex or bech32). Empty → `None`.
@@ -684,6 +688,20 @@ mod tests {
         );
         let padded = format!("  \t{SAMPLE_SHARED_KEY}\n ");
         assert_eq!(extract_shared_key_hex(&padded), Some(SAMPLE_SHARED_KEY));
+    }
+
+    #[test]
+    fn extract_shared_key_hex_rejects_two_different_keys() {
+        // A labeled key pasted after an old key without clearing the field.
+        let other = "ab".repeat(32);
+        let appended = format!("{other}Shared key: {SAMPLE_SHARED_KEY}");
+        assert_eq!(extract_shared_key_hex(&appended), None);
+    }
+
+    #[test]
+    fn extract_shared_key_hex_accepts_the_same_key_twice() {
+        let repeated = format!("{SAMPLE_SHARED_KEY} Shared key: {SAMPLE_SHARED_KEY}");
+        assert_eq!(extract_shared_key_hex(&repeated), Some(SAMPLE_SHARED_KEY));
     }
 
     #[test]

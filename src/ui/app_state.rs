@@ -675,7 +675,7 @@ impl AppState {
 
     /// Reduce the Shared key field to the bare 64-char hex `K_conv`, dropping any
     /// pasted label (e.g. `Shared key: <hex>` from Mostro mobile). Returns `false`
-    /// and leaves the field untouched when no 64-char hex run is present.
+    /// and leaves the field untouched when no single 64-char hex key is present.
     pub fn normalize_observer_shared_key_input(&mut self) -> bool {
         let Some(hex) =
             crate::util::chat_utils::extract_shared_key_hex(&self.observer_shared_key_input)
@@ -882,6 +882,16 @@ mod tests {
 
         assert!(!app.normalize_observer_shared_key_input());
         assert_eq!(app.observer_shared_key_input, "Shared key: abc");
+    }
+
+    #[test]
+    fn normalize_observer_shared_key_input_rejects_appended_second_key() {
+        let mut app = AppState::new(UserRole::Admin);
+        let appended = format!("{}Shared key: {}", "aa".repeat(32), "bb".repeat(32));
+        app.observer_shared_key_input = appended.clone();
+
+        assert!(!app.normalize_observer_shared_key_input());
+        assert_eq!(app.observer_shared_key_input, appended);
     }
 
     #[test]
