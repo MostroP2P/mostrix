@@ -14,7 +14,9 @@ use crate::ui::helpers::{
     format_local_timestamp, format_premium, get_sorted_filtered_book_orders,
     render_table_list_scrollbar, selected_book_display_idx,
 };
-use crate::ui::orders::{orders_filter_inline_layout, OrderBookFilterField, OrderBookFilterState};
+use crate::ui::orders::{
+    orders_filter_inline_layout, OrderBookFilterField, OrderBookFilterState, OrderBookSort,
+};
 use crate::ui::{apply_kind_color, AppState, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Renders the available orders table, with fewer columns when terminal width is limited.
@@ -63,11 +65,7 @@ pub fn render_orders_tab(
             state.inline = use_inline;
         }
         let editing_filters = matches!(app.mode, UiMode::OrderFilters(_));
-        let show_bar = if use_inline {
-            true
-        } else {
-            app.order_filters.has_active_filters() && !editing_filters
-        };
+        let show_bar = show_order_filter_bar(app, use_inline, editing_filters);
         let (filter_area, table_area) = split_filter_and_table(area, show_bar, use_inline);
         if let Some(filter_area) = filter_area {
             if let UiMode::OrderFilters(ref state) = app.mode {
@@ -112,11 +110,7 @@ pub fn render_orders_tab(
         state.inline = use_inline;
     }
     let editing_filters = matches!(app.mode, UiMode::OrderFilters(_));
-    let show_bar = if use_inline {
-        true
-    } else {
-        app.order_filters.has_active_filters() && !editing_filters
-    };
+    let show_bar = show_order_filter_bar(app, use_inline, editing_filters);
     let (filter_area, table_area) = split_filter_and_table(area, show_bar, use_inline);
     if let Some(filter_area) = filter_area {
         if let UiMode::OrderFilters(ref state) = app.mode {
@@ -325,6 +319,12 @@ fn split_filter_and_table(area: Rect, show_bar: bool, use_inline: bool) -> (Opti
     )
     .split(area);
     (Some(chunks[0]), chunks[1])
+}
+
+fn show_order_filter_bar(app: &AppState, use_inline: bool, editing_filters: bool) -> bool {
+    use_inline
+        || ((app.order_filters.has_active_filters() || app.order_sort != OrderBookSort::default())
+            && !editing_filters)
 }
 
 fn render_order_filter_bar(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
@@ -872,7 +872,7 @@ mod tests {
     use ratatui::Terminal;
     use uuid::Uuid;
 
-    use crate::ui::orders::OrderBookFilters;
+    use crate::ui::orders::{OrderBookFilters, OrderBookSortDirection, OrderBookSortKey};
     use crate::ui::{UiMode, UserRole};
 
     fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
@@ -949,6 +949,49 @@ mod tests {
         assert!(buffer_contains(buf, "Sort:"));
         assert!(buffer_contains(buf, "Created Descending"));
         assert!(buffer_contains(buf, "Shift+F: edit filters/sort"));
+    }
+
+    #[test]
+    fn compact_orders_table_shows_non_default_sort_summary_without_filters() {
+        let backend = TestBackend::new(90, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(vec![sample_order("SEPA", 2)]));
+        let mut app = AppState::new(UserRole::User);
+        app.order_sort = OrderBookSort {
+            key: OrderBookSortKey::Premium,
+            direction: OrderBookSortDirection::Ascending,
+        };
+
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Filters:"));
+        assert!(buffer_contains(buf, "none"));
+        assert!(buffer_contains(buf, "Sort:"));
+        assert!(buffer_contains(buf, "Premium Ascending"));
+    }
+
+    #[test]
+    fn compact_empty_orders_table_shows_non_default_sort_summary() {
+        let backend = TestBackend::new(90, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let mut app = AppState::new(UserRole::User);
+        app.order_sort = OrderBookSort {
+            key: OrderBookSortKey::Premium,
+            direction: OrderBookSortDirection::Ascending,
+        };
+
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Sort:"));
+        assert!(buffer_contains(buf, "Premium Ascending"));
+        assert!(buffer_contains(buf, "No offers found"));
     }
 
     #[test]
