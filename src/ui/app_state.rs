@@ -673,6 +673,23 @@ impl AppState {
         generation
     }
 
+    /// Reduce the Shared key field to the bare 64-char hex `K_conv`, dropping any
+    /// pasted label (e.g. `Shared key: <hex>` from Mostro mobile). Returns `false`
+    /// and leaves the field untouched when no single 64-char hex key is present.
+    pub fn normalize_observer_shared_key_input(&mut self) -> bool {
+        let Some(hex) =
+            crate::util::chat_utils::extract_shared_key_hex(&self.observer_shared_key_input)
+                .map(|hex| Zeroizing::new(hex.to_string()))
+        else {
+            return false;
+        };
+        if *hex != self.observer_shared_key_input {
+            self.observer_shared_key_input.zeroize();
+            self.observer_shared_key_input = hex.as_str().to_string();
+        }
+        true
+    }
+
     /// Drop the displayed transcript (and attachment keys) when the Shared key
     /// field no longer matches the pinned loaded key. Keeps the edited input.
     pub fn invalidate_observer_transcript_if_key_diverged(&mut self) {
@@ -846,6 +863,35 @@ mod tests {
         assert!(app.observer_messages.is_empty());
         assert!(app.observer_loaded_shared_key.is_empty());
         assert_ne!(app.observer_fetch_generation, gen);
+    }
+
+    #[test]
+    fn normalize_observer_shared_key_input_strips_pasted_label() {
+        let mut app = AppState::new(UserRole::Admin);
+        let hex = "23e9ba260f0e8ba1ea94e6aac24e58b19f0041b9fda33c8f24a7028f0b9df558";
+        app.observer_shared_key_input = format!("Shared key: {hex}");
+
+        assert!(app.normalize_observer_shared_key_input());
+        assert_eq!(app.observer_shared_key_input, hex);
+    }
+
+    #[test]
+    fn normalize_observer_shared_key_input_keeps_text_without_key() {
+        let mut app = AppState::new(UserRole::Admin);
+        app.observer_shared_key_input = "Shared key: abc".to_string();
+
+        assert!(!app.normalize_observer_shared_key_input());
+        assert_eq!(app.observer_shared_key_input, "Shared key: abc");
+    }
+
+    #[test]
+    fn normalize_observer_shared_key_input_rejects_appended_second_key() {
+        let mut app = AppState::new(UserRole::Admin);
+        let appended = format!("{}Shared key: {}", "aa".repeat(32), "bb".repeat(32));
+        app.observer_shared_key_input = appended.clone();
+
+        assert!(!app.normalize_observer_shared_key_input());
+        assert_eq!(app.observer_shared_key_input, appended);
     }
 
     #[test]
