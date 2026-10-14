@@ -354,24 +354,28 @@ rendering. Shared wrapping checks include long unbroken tokens and wide Unicode.
 
 ### Optional Terminal Clipboard Fallback (OSC 52)
 
-Chat selection with **Ctrl+C**, arrow keys, and **Enter** uses the native clipboard
-first. To allow a terminal clipboard fallback when native copying fails, set this
-in your active `settings.toml` and restart Mostrix:
+Native clipboard copying runs first for chat selection (**Ctrl+C**, arrow keys,
+**Enter**) and for shortcut copies (invoice **C**, seed backup **C**, disclosed
+Shared key **C**, My Trades order-ID copy). To allow a terminal clipboard
+fallback when native copying fails, set this in your active `settings.toml` and
+restart Mostrix:
 
 ```toml
 clipboard_osc52 = true
 ```
 
 The default is `false`, including for older configurations without this field.
-This option applies only to chat-message copying (Disputes in Progress, Solver
-DMs, My Trades, and Observer), not invoice, seed, or Shared key popup shortcuts.
 
-- Native success reports **Copied to clipboard** and never sends OSC 52.
+- Native success reports **Copied to clipboard** (chat) or sets the usual
+  “copied” UI flag / info toast (shortcuts) and never sends OSC 52.
 - On Linux, a native worker timeout or disconnected result channel reports
-  **Clipboard result unknown** and does not send OSC 52. The worker may still
-  complete a native copy later; only a confirmed failure permits fallback.
-- Fallback success reports **Sent to terminal clipboard**. The terminal can ignore
-  or block the request; Mostrix cannot confirm that its clipboard changed.
+  **Clipboard result unknown** (chat) and does not send OSC 52 for any path.
+  The worker may still complete a native copy later; only a confirmed failure
+  permits fallback.
+- Chat fallback success reports **Sent to terminal clipboard**. Shortcut paths
+  treat a successful OSC 52 write as success for their existing copied
+  indicators. The terminal can ignore or block the request; Mostrix cannot
+  confirm that its clipboard changed.
 - Non-interactive output, `TERM=dumb`, an oversized payload, or a write/flush failure reports
   **Clipboard unavailable**. Copy mode exits even on failure.
 - Fallback requires interactive stdin/stdout and rejects `TERM=dumb`. It sends
@@ -405,11 +409,12 @@ they do not write to the operating system clipboard.
   copies without fetching and Ctrl+L prevents stale fetch results from returning.
 - Check native clipboard persistence after returning to Mostrix on Windows,
   macOS, X11, and Wayland as available. Check existing invoice, seed, Shared key,
-  and attachment shortcuts outside selection.
+  order-ID, and attachment shortcuts outside selection.
 - Over SSH with the remote native clipboard unavailable, test OSC 52 opt-in off
-  and on, restarting after each setting change. Check the local clipboard, a
-  blocked/unsupported terminal, and a payload larger than 64 KiB. Test any
-  tmux/screen setup separately; a sent status is not proof of delivery.
+  and on (chat **and** invoice/seed/Shared key/order-ID **C**), restarting after
+  each setting change. Check the local clipboard, a blocked/unsupported
+  terminal, and a payload larger than 64 KiB. Test any tmux/screen setup
+  separately; a sent status is not proof of delivery.
 
 ## UI Components
 

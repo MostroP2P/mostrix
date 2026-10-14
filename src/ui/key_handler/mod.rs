@@ -18,6 +18,7 @@ use crate::ui::key_handler::chat_helpers::{
     resolve_mytrades_order_status_by_id, resolve_selected_mytrades_order_id,
     resolve_selected_mytrades_order_status,
 };
+use crate::ui::terminal::copy_with_osc52;
 use crate::ui::{
     helpers::{
         active_order_chat_list_snapshot, get_order_attachment_messages,
@@ -34,6 +35,7 @@ use crate::ui::{
     ViewingMessageButtonSelection,
 };
 use crate::util::{MostroInstanceInfo, OrderDmSubscriptionCmd, SendOrderAttachmentJob};
+use crate::SETTINGS;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
@@ -551,13 +553,30 @@ fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NativeClipboardOutcome {
+pub(crate) enum NativeClipboardOutcome {
     Copied,
     Failed,
     Indeterminate,
 }
 
-fn clipboard_worker_outcome(
+/// Result of a native clipboard write, optionally followed by OSC 52.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipboardCopyOutcome {
+    Copied,
+    SentToTerminal,
+    Unavailable,
+    Indeterminate,
+}
+
+impl ClipboardCopyOutcome {
+    /// True when the caller may treat the copy as successful for UI feedback.
+    #[must_use]
+    pub(crate) fn succeeded(self) -> bool {
+        matches!(self, Self::Copied | Self::SentToTerminal)
+    }
+}
+
+pub(crate) fn clipboard_worker_outcome(
     result: Result<bool, std::sync::mpsc::RecvTimeoutError>,
 ) -> NativeClipboardOutcome {
     match result {
@@ -567,17 +586,55 @@ fn clipboard_worker_outcome(
     }
 }
 
-/// Handle clipboard copy for text (invoice, Shared key, etc.)
+/// Native clipboard first; optional OSC 52 only after a confirmed native failure
+/// when `osc52_enabled` is set (same policy as chat copy).
+pub(crate) fn copy_text_with_optional_osc52(
+    text: String,
+    osc52_enabled: bool,
+    native: impl FnOnce(String) -> NativeClipboardOutcome,
+    terminal: impl FnOnce(&str) -> bool,
+) -> ClipboardCopyOutcome {
+    let fallback = osc52_enabled.then(|| Zeroizing::new(text.clone()));
+    match native(text) {
+        NativeClipboardOutcome::Copied => return ClipboardCopyOutcome::Copied,
+        NativeClipboardOutcome::Indeterminate => return ClipboardCopyOutcome::Indeterminate,
+        NativeClipboardOutcome::Failed => {}
+    }
+    if fallback
+        .as_ref()
+        .is_some_and(|text| terminal(text.as_str()))
+    {
+        ClipboardCopyOutcome::SentToTerminal
+    } else {
+        ClipboardCopyOutcome::Unavailable
+    }
+}
+
+pub(crate) fn clipboard_osc52_enabled() -> bool {
+    SETTINGS
+        .get()
+        .is_some_and(|settings| settings.clipboard_osc52)
+}
+
+/// Handle clipboard copy for text (invoice, Shared key, seed, order ID, etc.).
 ///
 /// Returns whether the write actually succeeded — `copied_to_clipboard` at the
 /// call site should only be set to `true` when this returns `true`, not merely
-/// because a copy attempt was made. On Linux the write runs on a background
-/// thread that keeps serving the selection after the result is reported.
+/// because a copy attempt was made. On Linux the native write runs on a
+/// background thread that keeps serving the selection after the result is
+/// reported. When `clipboard_osc52` is enabled and native copy fails, falls
+/// back to OSC 52 (same rules as chat copy).
 fn handle_clipboard_copy(text: String) -> bool {
-    copy_to_native_clipboard(text) == NativeClipboardOutcome::Copied
+    copy_text_with_optional_osc52(
+        text,
+        clipboard_osc52_enabled(),
+        copy_to_native_clipboard,
+        copy_with_osc52,
+    )
+    .succeeded()
 }
 
-fn copy_to_native_clipboard(text: String) -> NativeClipboardOutcome {
+pub(crate) fn copy_to_native_clipboard(text: String) -> NativeClipboardOutcome {
     #[cfg(target_os = "linux")]
     {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2937,6 +2994,45 @@ mod key_handler_tests {
                 .is_none(),
                 "{action:?} must be ignored while waiting"
             );
+        }
+    }
+
+    #[test]
+    fn shortcut_clipboard_osc52_fallback_requires_opt_in_and_native_failure() {
+        let payload = "lnbc1shortcut";
+        for enabled in [false, true] {
+            for native_result in [
+                NativeClipboardOutcome::Copied,
+                NativeClipboardOutcome::Failed,
+                NativeClipboardOutcome::Indeterminate,
+            ] {
+                for terminal_success in [false, true] {
+                    let mut terminal_called = false;
+                    let outcome = copy_text_with_optional_osc52(
+                        payload.into(),
+                        enabled,
+                        |_| native_result,
+                        |text| {
+                            terminal_called = true;
+                            assert_eq!(text, payload);
+                            terminal_success
+                        },
+                    );
+                    assert_eq!(
+                        terminal_called,
+                        enabled && native_result == NativeClipboardOutcome::Failed
+                    );
+                    assert_eq!(
+                        outcome.succeeded(),
+                        matches!(
+                            (native_result, enabled, terminal_success),
+                            (NativeClipboardOutcome::Copied, _, _)
+                                | (NativeClipboardOutcome::Failed, true, true)
+                        ),
+                        "invoice/seed/key shortcuts must treat OSC 52 success as copied"
+                    );
+                }
+            }
         }
     }
 
