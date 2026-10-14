@@ -1303,8 +1303,9 @@ fn rotate_focused_order_filter(state: &mut OrderBookFilterState, next: bool) {
 fn apply_order_filters(app: &mut AppState, state: OrderBookFilterState) {
     app.order_filters = state.filters;
     app.order_sort = state.sort;
-    app.selected_order_id = None;
-    app.orders_table_state = ratatui::widgets::TableState::default();
+    // Keep `selected_order_id`: sort never removes the UUID, and when a filter
+    // hides it the Orders projection resolver already falls back to the first
+    // visible row for highlight / Enter.
 }
 
 fn handle_order_filter_key(app: &mut AppState, code: KeyCode, key_event: &KeyEvent) -> bool {
@@ -3215,6 +3216,35 @@ mod key_handler_tests {
 
         assert_eq!(app.order_sort.key.label(), "Fiat amount");
         assert_eq!(app.order_sort.direction.label(), "Ascending");
+        assert!(matches!(app.mode, UiMode::UserMode(UserMode::Normal)));
+    }
+
+    #[test]
+    fn apply_sort_only_preserves_selected_order_id() {
+        let selected = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(selected);
+        let mut state = OrderBookFilterState::from_filters_and_sort(
+            OrderBookFilters::default(),
+            app.order_sort,
+            false,
+        );
+        state.focused = OrderBookFilterField::SortBy;
+        state.sort.key = state.sort.key.next();
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Enter,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ));
+
+        assert_eq!(
+            app.selected_order_id,
+            Some(selected),
+            "sort-only apply must not wipe the current Orders selection"
+        );
+        assert_eq!(app.order_sort.key.label(), "Fiat amount");
         assert!(matches!(app.mode, UiMode::UserMode(UserMode::Normal)));
     }
 

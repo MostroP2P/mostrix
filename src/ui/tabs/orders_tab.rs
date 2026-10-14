@@ -654,7 +654,9 @@ fn compact_order_filter_popup_lines(
             ("Shift+X", "Clear"),
         ]));
     } else {
-        lines.push(shortcut_line(&[("Shift+X", "Clear")]));
+        // At the 36×6 popup boundary, keep Tab so Sort by / Direction stay
+        // reachable from the default Kind field; drop ↑↓ to save a row.
+        lines.push(shortcut_line(&[("Tab", "Field"), ("Shift+X", "Clear")]));
     }
 
     lines.push(Line::from(Span::styled(
@@ -1085,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn tiny_order_filter_popup_keeps_clear_shortcut_and_value_visible() {
+    fn tiny_order_filter_popup_keeps_tab_clear_and_value_visible() {
         let backend = TestBackend::new(36, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         let state = OrderBookFilterState {
@@ -1102,6 +1104,10 @@ mod tests {
             .unwrap();
 
         let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "Tab Field"),
+            "36×6 must keep Tab so Sort by / Direction stay reachable"
+        );
         assert!(buffer_contains(buf, "Shift+X Clear"));
         assert!(buffer_contains(buf, "Premium"));
         assert!(buffer_contains(buf, "+3%"));

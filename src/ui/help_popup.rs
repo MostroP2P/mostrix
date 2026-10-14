@@ -436,8 +436,16 @@ fn compact_orders_help(narrow: bool, inner_width: u16, inner_height: u16) -> Vec
         let (title_style, _) = settings_instruction_block_style();
         let close_rows = if inner_width <= 13 { 1 } else { 2 };
         let available_shortcut_rows = inner_height.saturating_sub(close_rows);
-        if available_shortcut_rows <= 3 {
+        if available_shortcut_rows <= 2 {
             return ["Shift+F", "Shift+X"]
+                .into_iter()
+                .map(|row| Line::from(Span::styled(row, title_style)))
+                .collect();
+        }
+        if available_shortcut_rows <= 3 {
+            // Prefer Tab over ↑↓/Enter when only one extra row fits so filter/sort
+            // field cycling stays discoverable after Shift+F.
+            return ["Shift+F", "Shift+X", "Tab"]
                 .into_iter()
                 .map(|row| Line::from(Span::styled(row, title_style)))
                 .collect();
@@ -1290,11 +1298,17 @@ mod help_content_tests {
                 .unwrap();
 
             let buf = terminal.backend().buffer();
+            let rendered = buffer_text(buf);
             for expected in ["Shift+F", "Shift+X", "Esc"] {
-                let rendered = buffer_text(buf);
                 assert!(
                     rendered.contains(expected),
                     "missing {expected:?} from {width}x{height} Orders help:\n{rendered}"
+                );
+            }
+            if height == 6 {
+                assert!(
+                    rendered.contains("Tab"),
+                    "15×6 Orders help should surface Tab for filter/sort fields:\n{rendered}"
                 );
             }
         }
