@@ -570,10 +570,33 @@ pub(crate) enum ClipboardCopyOutcome {
 }
 
 impl ClipboardCopyOutcome {
-    /// True when the caller may treat the copy as successful for UI feedback.
+    /// Map invoice **C** results into PayInvoice / PayBondInvoice UI feedback.
+    ///
+    /// `SentToTerminal` stays distinct from `Copied` so the popup does not claim
+    /// a system-clipboard write when only an OSC 52 sequence was flushed.
     #[must_use]
-    pub(crate) fn succeeded(self) -> bool {
-        matches!(self, Self::Copied | Self::SentToTerminal)
+    pub(crate) fn invoice_feedback(self) -> crate::ui::orders::InvoiceClipboardFeedback {
+        use crate::ui::orders::InvoiceClipboardFeedback;
+        match self {
+            Self::Copied => InvoiceClipboardFeedback::Copied,
+            Self::SentToTerminal => InvoiceClipboardFeedback::SentToTerminal,
+            Self::Unavailable | Self::Indeterminate => InvoiceClipboardFeedback::None,
+        }
+    }
+
+    /// Info / error toast for My Trades order-ID copy (**Ctrl+K** → **I**).
+    #[must_use]
+    pub(crate) fn order_id_result_message(self) -> OperationResult {
+        match self {
+            Self::Copied => OperationResult::Info("Order ID copied to clipboard.".to_string()),
+            Self::SentToTerminal => {
+                OperationResult::Info("Order ID sent to terminal clipboard.".to_string())
+            }
+            Self::Indeterminate => OperationResult::Info("Clipboard result unknown.".to_string()),
+            Self::Unavailable => {
+                OperationResult::Error("Could not copy order ID to the clipboard.".to_string())
+            }
+        }
     }
 }
 
@@ -620,17 +643,17 @@ pub(crate) fn clipboard_osc52_enabled() -> bool {
 /// Clipboard copy for chat-adjacent / operational text (invoice, order ID).
 ///
 /// When `clipboard_osc52` is enabled and the native write fails, falls back to
-/// OSC 52. Do **not** use this for recovery seeds or disclosed Shared keys —
-/// those stay on [`handle_clipboard_copy_native_only`] so an existing chat-only
-/// opt-in does not silently emit higher-sensitivity secrets over SSH.
-fn handle_clipboard_copy(text: String) -> bool {
+/// OSC 52. Callers must preserve [`ClipboardCopyOutcome`] in the UI — do not
+/// collapse `SentToTerminal` into a confirmed "copied" claim. Do **not** use
+/// this for recovery seeds or disclosed Shared keys — those stay on
+/// [`handle_clipboard_copy_native_only`].
+fn handle_clipboard_copy(text: String) -> ClipboardCopyOutcome {
     copy_text_with_optional_osc52(
         text,
         clipboard_osc52_enabled(),
         copy_to_native_clipboard,
         copy_with_osc52,
     )
-    .succeeded()
 }
 
 /// Native-only clipboard copy for recovery seeds and disclosed Shared keys.
@@ -639,10 +662,12 @@ fn handle_clipboard_copy(text: String) -> bool {
 /// remains scoped to chat / invoice / order-ID so upgrades do not silently
 /// send higher-sensitivity secrets over the terminal/SSH chain.
 fn handle_clipboard_copy_native_only(text: String) -> bool {
-    copy_text_with_optional_osc52(text, false, copy_to_native_clipboard, |_| {
-        unreachable!("secret clipboard copy disables OSC 52")
-    })
-    .succeeded()
+    matches!(
+        copy_text_with_optional_osc52(text, false, copy_to_native_clipboard, |_| {
+            unreachable!("secret clipboard copy disables OSC 52")
+        }),
+        ClipboardCopyOutcome::Copied
+    )
 }
 
 pub(crate) fn copy_to_native_clipboard(text: String) -> NativeClipboardOutcome {
@@ -950,15 +975,9 @@ fn apply_trade_action_selection(
         }
         6 => {
             // Copy the full order UUID (admins often ask for it when debugging a trade).
-            if handle_clipboard_copy(order_id.to_string()) {
-                app.mode = UiMode::operation_result(OperationResult::Info(
-                    "Order ID copied to clipboard.".to_string(),
-                ));
-            } else {
-                app.mode = UiMode::operation_result(OperationResult::Error(
-                    "Could not copy order ID to the clipboard.".to_string(),
-                ));
-            }
+            app.mode = UiMode::operation_result(
+                handle_clipboard_copy(order_id.to_string()).order_id_result_message(),
+            );
         }
         7 => {
             let full_privacy = app
@@ -2273,7 +2292,7 @@ pub fn handle_key_event(
     ) = app.mode
     {
         if code != KeyCode::Char('c') && code != KeyCode::Char('C') {
-            invoice_state.copied_to_clipboard = false;
+            invoice_state.clipboard_feedback = crate::ui::orders::InvoiceClipboardFeedback::None;
         }
     }
 
@@ -2928,7 +2947,8 @@ pub fn handle_key_event(
             ) = app.mode
             {
                 if let Some(invoice) = &notification.invoice {
-                    invoice_state.copied_to_clipboard = handle_clipboard_copy(invoice.clone());
+                    invoice_state.clipboard_feedback =
+                        handle_clipboard_copy(invoice.clone()).invoice_feedback();
                 }
             }
 
@@ -3033,15 +3053,28 @@ mod key_handler_tests {
                         terminal_called,
                         enabled && native_result == NativeClipboardOutcome::Failed
                     );
-                    assert_eq!(
-                        outcome.succeeded(),
-                        matches!(
-                            (native_result, enabled, terminal_success),
-                            (NativeClipboardOutcome::Copied, _, _)
-                                | (NativeClipboardOutcome::Failed, true, true)
-                        ),
-                        "invoice/order-ID shortcuts may treat OSC 52 success as copied"
-                    );
+                    let expected = if native_result == NativeClipboardOutcome::Copied {
+                        ClipboardCopyOutcome::Copied
+                    } else if native_result == NativeClipboardOutcome::Indeterminate {
+                        ClipboardCopyOutcome::Indeterminate
+                    } else if enabled && terminal_success {
+                        ClipboardCopyOutcome::SentToTerminal
+                    } else {
+                        ClipboardCopyOutcome::Unavailable
+                    };
+                    assert_eq!(outcome, expected);
+                    // UI must not collapse SentToTerminal into "copied".
+                    if outcome == ClipboardCopyOutcome::SentToTerminal {
+                        assert_eq!(
+                            outcome.invoice_feedback(),
+                            crate::ui::orders::InvoiceClipboardFeedback::SentToTerminal
+                        );
+                        assert!(matches!(
+                            outcome.order_id_result_message(),
+                            OperationResult::Info(msg)
+                                if msg.contains("terminal clipboard")
+                        ));
+                    }
                 }
             }
         }
@@ -3062,7 +3095,6 @@ mod key_handler_tests {
             },
         );
         assert!(!terminal_called);
-        assert!(!outcome.succeeded());
         assert_eq!(outcome, ClipboardCopyOutcome::Unavailable);
     }
 

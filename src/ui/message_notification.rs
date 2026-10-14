@@ -299,10 +299,10 @@ fn render_pay_help(
     qr_fallback: bool,
     has_cancel: bool,
 ) {
-    if invoice_state.copied_to_clipboard {
+    if let Some(status) = invoice_state.clipboard_feedback.status_line() {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                "✓ Invoice copied to clipboard!",
+                status,
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -499,10 +499,10 @@ fn render_pay_qr_help(
     qr_fallback: bool,
     has_cancel: bool,
 ) {
-    if invoice_state.copied_to_clipboard {
+    if let Some(status) = invoice_state.clipboard_feedback.status_line() {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                "✓ Invoice copied to clipboard!",
+                status,
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),

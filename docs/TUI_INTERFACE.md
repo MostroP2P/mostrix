@@ -374,10 +374,10 @@ chat opt-in is not widened to higher-sensitivity secrets on upgrade.
   **Clipboard result unknown** (chat) and does not send OSC 52 for any path.
   The worker may still complete a native copy later; only a confirmed failure
   permits fallback.
-- Chat fallback success reports **Sent to terminal clipboard**. Invoice and
-  order-ID shortcuts treat a successful OSC 52 write as success for their
-  existing copied indicators. The terminal can ignore or block the request;
-  Mostrix cannot confirm that its clipboard changed.
+- Chat fallback success reports **Sent to terminal clipboard**. Invoice **C**
+  and order-ID copy use the same wording when only OSC 52 was flushed — they
+  do **not** claim a confirmed system-clipboard copy. The terminal can ignore
+  or block the request; Mostrix cannot confirm that its clipboard changed.
 - Non-interactive output, `TERM=dumb`, an oversized payload, or a write/flush failure reports
   **Clipboard unavailable**. Copy mode exits even on failure.
 - Fallback requires interactive stdin/stdout and rejects `TERM=dumb`. It sends

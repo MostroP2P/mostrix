@@ -58,11 +58,11 @@ pub use network_status::NetworkStatus;
 pub use state::{
     apply_kind_color, order_message_to_notification, AdminChatLastSeen, AdminChatUpdate, AdminTab,
     AppState, BuyerInvoicePreference, ChatAttachment, ChatAttachmentType, ChatParty, ChatSender,
-    DecodedChatMessage, DisputeChatMessage, DisputeFilter, FormState, InvoiceInputState,
-    InvoiceNotificationActionSelection, KeyInputState, LnAddressVerifyResult, MessageNotification,
-    MessageViewState, MostroInfoFetchResult, OperationResult, OrderChatLastSeen,
-    OrderChatStaticHeader, OrderChatUpdate, OrderMessage, RatingOrderState, Tab, TakeOrderState,
-    ThreeState, UiMode, UserChatChannel, UserChatSender, UserOrderChatMessage, UserRole, UserTab,
-    ViewingMessageButtonSelection,
+    DecodedChatMessage, DisputeChatMessage, DisputeFilter, FormState, InvoiceClipboardFeedback,
+    InvoiceInputState, InvoiceNotificationActionSelection, KeyInputState, LnAddressVerifyResult,
+    MessageNotification, MessageViewState, MostroInfoFetchResult, OperationResult,
+    OrderChatLastSeen, OrderChatStaticHeader, OrderChatUpdate, OrderMessage, RatingOrderState, Tab,
+    TakeOrderState, ThreeState, UiMode, UserChatChannel, UserChatSender, UserOrderChatMessage,
+    UserRole, UserTab, ViewingMessageButtonSelection,
 };
 pub use user_state::UserMode;
