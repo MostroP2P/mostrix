@@ -18,6 +18,7 @@ use crate::ui::key_handler::chat_helpers::{
     resolve_mytrades_order_status_by_id, resolve_selected_mytrades_order_id,
     resolve_selected_mytrades_order_status,
 };
+use crate::ui::terminal::copy_with_osc52;
 use crate::ui::{
     helpers::{
         active_order_chat_list_snapshot, get_order_attachment_messages,
@@ -34,6 +35,7 @@ use crate::ui::{
     ViewingMessageButtonSelection,
 };
 use crate::util::{MostroInstanceInfo, OrderDmSubscriptionCmd, SendOrderAttachmentJob};
+use crate::SETTINGS;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use mostro_core::prelude::*;
 use nostr_sdk::prelude::*;
@@ -448,7 +450,8 @@ fn reset_disclosure_copied_indicator(mode: &mut UiMode, key_event: &KeyEvent) {
 /// Only `conv_hex` (the Shared key) is ever copied — the signing key itself
 /// is never disclosed. Returns `true` if the popup was open and handled the key.
 fn copy_disclosed_shared_key_if_open(mode: &mut UiMode) -> bool {
-    copy_disclosed_shared_key_if_open_with(mode, handle_clipboard_copy)
+    // Shared keys must never ride OSC 52 via the legacy chat-scoped flag.
+    copy_disclosed_shared_key_if_open_with(mode, handle_clipboard_copy_native_only)
 }
 
 /// Testable core of [`copy_disclosed_shared_key_if_open`]; `copy_fn` is injected
@@ -551,13 +554,53 @@ fn linux_clipboard_copy_worker(text: String, result_tx: std::sync::mpsc::Sender<
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NativeClipboardOutcome {
+pub(crate) enum NativeClipboardOutcome {
     Copied,
     Failed,
     Indeterminate,
 }
 
-fn clipboard_worker_outcome(
+/// Result of a native clipboard write, optionally followed by OSC 52.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipboardCopyOutcome {
+    Copied,
+    SentToTerminal,
+    Unavailable,
+    Indeterminate,
+}
+
+impl ClipboardCopyOutcome {
+    /// Map invoice **C** results into PayInvoice / PayBondInvoice UI feedback.
+    ///
+    /// `SentToTerminal` stays distinct from `Copied` so the popup does not claim
+    /// a system-clipboard write when only an OSC 52 sequence was flushed.
+    #[must_use]
+    pub(crate) fn invoice_feedback(self) -> crate::ui::orders::InvoiceClipboardFeedback {
+        use crate::ui::orders::InvoiceClipboardFeedback;
+        match self {
+            Self::Copied => InvoiceClipboardFeedback::Copied,
+            Self::SentToTerminal => InvoiceClipboardFeedback::SentToTerminal,
+            Self::Unavailable | Self::Indeterminate => InvoiceClipboardFeedback::None,
+        }
+    }
+
+    /// Info / error toast for My Trades order-ID copy (**Ctrl+K** → **I**).
+    #[must_use]
+    pub(crate) fn order_id_result_message(self) -> OperationResult {
+        match self {
+            Self::Copied => OperationResult::Info("Order ID copied to clipboard.".to_string()),
+            Self::SentToTerminal => {
+                OperationResult::Info("Order ID sent to terminal clipboard.".to_string())
+            }
+            Self::Indeterminate => OperationResult::Info("Clipboard result unknown.".to_string()),
+            Self::Unavailable => {
+                OperationResult::Error("Could not copy order ID to the clipboard.".to_string())
+            }
+        }
+    }
+}
+
+pub(crate) fn clipboard_worker_outcome(
     result: Result<bool, std::sync::mpsc::RecvTimeoutError>,
 ) -> NativeClipboardOutcome {
     match result {
@@ -567,17 +610,67 @@ fn clipboard_worker_outcome(
     }
 }
 
-/// Handle clipboard copy for text (invoice, Shared key, etc.)
-///
-/// Returns whether the write actually succeeded — `copied_to_clipboard` at the
-/// call site should only be set to `true` when this returns `true`, not merely
-/// because a copy attempt was made. On Linux the write runs on a background
-/// thread that keeps serving the selection after the result is reported.
-fn handle_clipboard_copy(text: String) -> bool {
-    copy_to_native_clipboard(text) == NativeClipboardOutcome::Copied
+/// Native clipboard first; optional OSC 52 only after a confirmed native failure
+/// when `osc52_enabled` is set (same policy as chat copy).
+pub(crate) fn copy_text_with_optional_osc52(
+    text: String,
+    osc52_enabled: bool,
+    native: impl FnOnce(String) -> NativeClipboardOutcome,
+    terminal: impl FnOnce(&str) -> bool,
+) -> ClipboardCopyOutcome {
+    let fallback = osc52_enabled.then(|| Zeroizing::new(text.clone()));
+    match native(text) {
+        NativeClipboardOutcome::Copied => return ClipboardCopyOutcome::Copied,
+        NativeClipboardOutcome::Indeterminate => return ClipboardCopyOutcome::Indeterminate,
+        NativeClipboardOutcome::Failed => {}
+    }
+    if fallback
+        .as_ref()
+        .is_some_and(|text| terminal(text.as_str()))
+    {
+        ClipboardCopyOutcome::SentToTerminal
+    } else {
+        ClipboardCopyOutcome::Unavailable
+    }
 }
 
-fn copy_to_native_clipboard(text: String) -> NativeClipboardOutcome {
+pub(crate) fn clipboard_osc52_enabled() -> bool {
+    SETTINGS
+        .get()
+        .is_some_and(|settings| settings.clipboard_osc52)
+}
+
+/// Clipboard copy for chat-adjacent / operational text (invoice, order ID).
+///
+/// When `clipboard_osc52` is enabled and the native write fails, falls back to
+/// OSC 52. Callers must preserve [`ClipboardCopyOutcome`] in the UI — do not
+/// collapse `SentToTerminal` into a confirmed "copied" claim. Do **not** use
+/// this for recovery seeds or disclosed Shared keys — those stay on
+/// [`handle_clipboard_copy_native_only`].
+fn handle_clipboard_copy(text: String) -> ClipboardCopyOutcome {
+    copy_text_with_optional_osc52(
+        text,
+        clipboard_osc52_enabled(),
+        copy_to_native_clipboard,
+        copy_with_osc52,
+    )
+}
+
+/// Native-only clipboard copy for recovery seeds and disclosed Shared keys.
+///
+/// Never attempts OSC 52, even when `clipboard_osc52` is enabled — that flag
+/// remains scoped to chat / invoice / order-ID so upgrades do not silently
+/// send higher-sensitivity secrets over the terminal/SSH chain.
+fn handle_clipboard_copy_native_only(text: String) -> bool {
+    matches!(
+        copy_text_with_optional_osc52(text, false, copy_to_native_clipboard, |_| {
+            unreachable!("secret clipboard copy disables OSC 52")
+        }),
+        ClipboardCopyOutcome::Copied
+    )
+}
+
+pub(crate) fn copy_to_native_clipboard(text: String) -> NativeClipboardOutcome {
     #[cfg(target_os = "linux")]
     {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -882,15 +975,9 @@ fn apply_trade_action_selection(
         }
         6 => {
             // Copy the full order UUID (admins often ask for it when debugging a trade).
-            if handle_clipboard_copy(order_id.to_string()) {
-                app.mode = UiMode::operation_result(OperationResult::Info(
-                    "Order ID copied to clipboard.".to_string(),
-                ));
-            } else {
-                app.mode = UiMode::operation_result(OperationResult::Error(
-                    "Could not copy order ID to the clipboard.".to_string(),
-                ));
-            }
+            app.mode = UiMode::operation_result(
+                handle_clipboard_copy(order_id.to_string()).order_id_result_message(),
+            );
         }
         7 => {
             let full_privacy = app
@@ -2205,7 +2292,7 @@ pub fn handle_key_event(
     ) = app.mode
     {
         if code != KeyCode::Char('c') && code != KeyCode::Char('C') {
-            invoice_state.copied_to_clipboard = false;
+            invoice_state.clipboard_feedback = crate::ui::orders::InvoiceClipboardFeedback::None;
         }
     }
 
@@ -2860,7 +2947,8 @@ pub fn handle_key_event(
             ) = app.mode
             {
                 if let Some(invoice) = &notification.invoice {
-                    invoice_state.copied_to_clipboard = handle_clipboard_copy(invoice.clone());
+                    invoice_state.clipboard_feedback =
+                        handle_clipboard_copy(invoice.clone()).invoice_feedback();
                 }
             }
 
@@ -2875,7 +2963,7 @@ pub fn handle_key_event(
                 } = app.mode
                 {
                     let text = mnemonic.to_string();
-                    *copied_to_clipboard = handle_clipboard_copy(text);
+                    *copied_to_clipboard = handle_clipboard_copy_native_only(text);
                 }
             }
             Some(true)
@@ -2938,6 +3026,76 @@ mod key_handler_tests {
                 "{action:?} must be ignored while waiting"
             );
         }
+    }
+
+    #[test]
+    fn shortcut_clipboard_osc52_fallback_requires_opt_in_and_native_failure() {
+        let payload = "lnbc1shortcut";
+        for enabled in [false, true] {
+            for native_result in [
+                NativeClipboardOutcome::Copied,
+                NativeClipboardOutcome::Failed,
+                NativeClipboardOutcome::Indeterminate,
+            ] {
+                for terminal_success in [false, true] {
+                    let mut terminal_called = false;
+                    let outcome = copy_text_with_optional_osc52(
+                        payload.into(),
+                        enabled,
+                        |_| native_result,
+                        |text| {
+                            terminal_called = true;
+                            assert_eq!(text, payload);
+                            terminal_success
+                        },
+                    );
+                    assert_eq!(
+                        terminal_called,
+                        enabled && native_result == NativeClipboardOutcome::Failed
+                    );
+                    let expected = if native_result == NativeClipboardOutcome::Copied {
+                        ClipboardCopyOutcome::Copied
+                    } else if native_result == NativeClipboardOutcome::Indeterminate {
+                        ClipboardCopyOutcome::Indeterminate
+                    } else if enabled && terminal_success {
+                        ClipboardCopyOutcome::SentToTerminal
+                    } else {
+                        ClipboardCopyOutcome::Unavailable
+                    };
+                    assert_eq!(outcome, expected);
+                    // UI must not collapse SentToTerminal into "copied".
+                    if outcome == ClipboardCopyOutcome::SentToTerminal {
+                        assert_eq!(
+                            outcome.invoice_feedback(),
+                            crate::ui::orders::InvoiceClipboardFeedback::SentToTerminal
+                        );
+                        assert!(matches!(
+                            outcome.order_id_result_message(),
+                            OperationResult::Info(msg)
+                                if msg.contains("terminal clipboard")
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn secret_clipboard_copy_never_attempts_osc52() {
+        // Seeds / Shared keys must stay native-only even if the chat OSC 52
+        // flag is on — regression for silent upgrade opt-in of secrets.
+        let mut terminal_called = false;
+        let outcome = copy_text_with_optional_osc52(
+            "abandon ability able".into(),
+            false, // native-only path forces osc52_enabled=false
+            |_| NativeClipboardOutcome::Failed,
+            |_| {
+                terminal_called = true;
+                true
+            },
+        );
+        assert!(!terminal_called);
+        assert_eq!(outcome, ClipboardCopyOutcome::Unavailable);
     }
 
     #[test]

@@ -1061,6 +1061,35 @@ pub enum InvoiceNotificationActionSelection {
     Cancel,
 }
 
+/// Feedback after a PayInvoice / PayBondInvoice **C** copy attempt.
+///
+/// Distinguishes confirmed native copy from an OSC 52 write that was only
+/// flushed (terminal may ignore it) so the UI does not claim the invoice is
+/// on the system clipboard when it may not be.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InvoiceClipboardFeedback {
+    #[default]
+    None,
+    Copied,
+    SentToTerminal,
+}
+
+impl InvoiceClipboardFeedback {
+    #[must_use]
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    #[must_use]
+    pub fn status_line(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Copied => Some("✓ Invoice copied to clipboard!"),
+            Self::SentToTerminal => Some("✓ Invoice sent to terminal clipboard"),
+        }
+    }
+}
+
 /// Invoice popup state: typed input for AddInvoice, or PayInvoice / PayBondInvoice display.
 ///
 /// Pay popups prefer a QR (`show_qr`); SPACE toggles the wrapped bolt11, and
@@ -1070,7 +1099,8 @@ pub struct InvoiceInputState {
     pub invoice_input: String,
     pub focused: bool,
     pub just_pasted: bool, // Flag to ignore Enter immediately after paste
-    pub copied_to_clipboard: bool, // Flag to show "Copied!" message
+    /// Copy feedback for **C** (native vs OSC 52).
+    pub clipboard_feedback: InvoiceClipboardFeedback,
     /// Vertical scroll offset for long invoice display (PayInvoice popup).
     pub scroll_y: u16,
     /// Selected action in AddInvoice/PayInvoice popup.
@@ -1087,7 +1117,7 @@ impl InvoiceInputState {
             invoice_input: String::new(),
             focused: false,
             just_pasted: false,
-            copied_to_clipboard: false,
+            clipboard_feedback: InvoiceClipboardFeedback::None,
             scroll_y: 0,
             action_selection: InvoiceNotificationActionSelection::Primary,
             show_qr: true,

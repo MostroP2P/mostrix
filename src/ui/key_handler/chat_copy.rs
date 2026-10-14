@@ -1,17 +1,18 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 use crate::ui::helpers::{message_visible_for_party, selected_filtered_dispute};
 use crate::ui::key_handler::chat_helpers::live_order_chat_draft_target;
-use crate::ui::key_handler::{copy_to_native_clipboard, NativeClipboardOutcome};
+use crate::ui::key_handler::{
+    clipboard_osc52_enabled, copy_text_with_optional_osc52, copy_to_native_clipboard,
+    ClipboardCopyOutcome,
+};
 use crate::ui::terminal::copy_with_osc52;
 use crate::ui::{
     AdminMode, AdminTab, AppState, ChatAttachment, ChatParty, ChatSender, DisputeFilter, Tab,
     UiMode, UserChatChannel, UserChatSender, UserRole, UserTab,
 };
-use crate::SETTINGS;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ChatCopyTarget {
@@ -298,43 +299,11 @@ pub(crate) fn feedback_text(app: &AppState) -> Option<&'static str> {
     (focused_target(app).as_ref() == Some(&feedback.target)).then_some(feedback.text)
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum CopyOutcome {
-    Copied,
-    SentToTerminal,
-    Unavailable,
-    Indeterminate,
-}
-
-fn copy_chat_text_with(
-    text: String,
-    osc52_enabled: bool,
-    native: impl FnOnce(String) -> NativeClipboardOutcome,
-    terminal: impl FnOnce(&str) -> bool,
-) -> CopyOutcome {
-    let fallback = osc52_enabled.then(|| Zeroizing::new(text.clone()));
-    match native(text) {
-        NativeClipboardOutcome::Copied => return CopyOutcome::Copied,
-        NativeClipboardOutcome::Indeterminate => return CopyOutcome::Indeterminate,
-        NativeClipboardOutcome::Failed => {}
-    }
-    if fallback
-        .as_ref()
-        .is_some_and(|text| terminal(text.as_str()))
-    {
-        CopyOutcome::SentToTerminal
-    } else {
-        CopyOutcome::Unavailable
-    }
-}
-
 pub(crate) fn handle_key(app: &mut AppState, key: &KeyEvent) -> bool {
     handle_key_with_result(app, key, |text| {
-        copy_chat_text_with(
+        copy_text_with_optional_osc52(
             text,
-            SETTINGS
-                .get()
-                .is_some_and(|settings| settings.clipboard_osc52),
+            clipboard_osc52_enabled(),
             copy_to_native_clipboard,
             copy_with_osc52,
         )
@@ -349,9 +318,9 @@ pub(crate) fn handle_key_with(
 ) -> bool {
     handle_key_with_result(app, key, |text| {
         if copy(text) {
-            CopyOutcome::Copied
+            ClipboardCopyOutcome::Copied
         } else {
-            CopyOutcome::Unavailable
+            ClipboardCopyOutcome::Unavailable
         }
     })
 }
@@ -359,7 +328,7 @@ pub(crate) fn handle_key_with(
 fn handle_key_with_result(
     app: &mut AppState,
     key: &KeyEvent,
-    copy: impl FnOnce(String) -> CopyOutcome,
+    copy: impl FnOnce(String) -> ClipboardCopyOutcome,
 ) -> bool {
     if app.chat_copy_block_enter && key.code == KeyCode::Enter {
         return true;
@@ -406,10 +375,10 @@ fn handle_key_with_result(
                     "No filename to copy"
                 } else {
                     match copy(parts.join("\n\n")) {
-                        CopyOutcome::Copied => "Copied to clipboard",
-                        CopyOutcome::SentToTerminal => "Sent to terminal clipboard",
-                        CopyOutcome::Unavailable => "Clipboard unavailable",
-                        CopyOutcome::Indeterminate => "Clipboard result unknown",
+                        ClipboardCopyOutcome::Copied => "Copied to clipboard",
+                        ClipboardCopyOutcome::SentToTerminal => "Sent to terminal clipboard",
+                        ClipboardCopyOutcome::Unavailable => "Clipboard unavailable",
+                        ClipboardCopyOutcome::Indeterminate => "Clipboard result unknown",
                     }
                 };
                 app.chat_copy_feedback = Some(ChatCopyFeedback {
@@ -484,6 +453,7 @@ pub(crate) mod tests {
     use crate::models::AdminDispute;
     use crate::ui::helpers::OrderChatListItem;
     use crate::ui::key_handler::chat_helpers::sync_order_chat_draft_to_live_target;
+    use crate::ui::key_handler::NativeClipboardOutcome;
     use crate::ui::{ChatAttachmentType, DisputeChatMessage, UserMode, UserOrderChatMessage};
     use crate::util::solver_dms::SolverDm;
     use mostro_core::prelude::Status;
@@ -685,16 +655,16 @@ pub(crate) mod tests {
         use ratatui::{backend::TestBackend, Terminal};
 
         for outcome in [
-            CopyOutcome::Copied,
-            CopyOutcome::SentToTerminal,
-            CopyOutcome::Unavailable,
-            CopyOutcome::Indeterminate,
+            ClipboardCopyOutcome::Copied,
+            ClipboardCopyOutcome::SentToTerminal,
+            ClipboardCopyOutcome::Unavailable,
+            ClipboardCopyOutcome::Indeterminate,
         ] {
             let expected = match outcome {
-                CopyOutcome::Copied => "Copied to clipboard",
-                CopyOutcome::SentToTerminal => "Sent to terminal clipboard",
-                CopyOutcome::Unavailable => "Clipboard unavailable",
-                CopyOutcome::Indeterminate => "Clipboard result unknown",
+                ClipboardCopyOutcome::Copied => "Copied to clipboard",
+                ClipboardCopyOutcome::SentToTerminal => "Sent to terminal clipboard",
+                ClipboardCopyOutcome::Unavailable => "Clipboard unavailable",
+                ClipboardCopyOutcome::Indeterminate => "Clipboard result unknown",
             };
             for mut app in copy_views() {
                 enter_selection(&mut app);
@@ -702,10 +672,12 @@ pub(crate) mod tests {
                     &mut app,
                     &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                     |_| match outcome {
-                        CopyOutcome::Copied => CopyOutcome::Copied,
-                        CopyOutcome::SentToTerminal => CopyOutcome::SentToTerminal,
-                        CopyOutcome::Unavailable => CopyOutcome::Unavailable,
-                        CopyOutcome::Indeterminate => CopyOutcome::Indeterminate,
+                        ClipboardCopyOutcome::Copied => ClipboardCopyOutcome::Copied,
+                        ClipboardCopyOutcome::SentToTerminal => {
+                            ClipboardCopyOutcome::SentToTerminal
+                        }
+                        ClipboardCopyOutcome::Unavailable => ClipboardCopyOutcome::Unavailable,
+                        ClipboardCopyOutcome::Indeterminate => ClipboardCopyOutcome::Indeterminate,
                     },
                 );
                 for (width, height) in [(30, 8), (40, 12), (80, 24)] {
@@ -774,7 +746,7 @@ pub(crate) mod tests {
                     let payload = "  private\n\u{00e9}\x1b\t  ";
                     let mut native_called = false;
                     let mut terminal_called = false;
-                    let outcome = copy_chat_text_with(
+                    let outcome = copy_text_with_optional_osc52(
                         payload.into(),
                         enabled,
                         |text| {
@@ -796,13 +768,13 @@ pub(crate) mod tests {
                     assert_eq!(
                         outcome,
                         if native_result == NativeClipboardOutcome::Copied {
-                            CopyOutcome::Copied
+                            ClipboardCopyOutcome::Copied
                         } else if native_result == NativeClipboardOutcome::Indeterminate {
-                            CopyOutcome::Indeterminate
+                            ClipboardCopyOutcome::Indeterminate
                         } else if enabled && terminal_success {
-                            CopyOutcome::SentToTerminal
+                            ClipboardCopyOutcome::SentToTerminal
                         } else {
-                            CopyOutcome::Unavailable
+                            ClipboardCopyOutcome::Unavailable
                         }
                     );
                 }
@@ -817,13 +789,13 @@ pub(crate) mod tests {
         use std::time::Duration;
 
         let (sender, receiver) = channel();
-        let outcome = copy_chat_text_with(
+        let outcome = copy_text_with_optional_osc52(
             "private text".into(),
             true,
             |_| clipboard_worker_outcome(receiver.recv_timeout(Duration::ZERO)),
             |_| panic!("an unconfirmed native write must not reach another clipboard"),
         );
-        assert_eq!(outcome, CopyOutcome::Indeterminate);
+        assert_eq!(outcome, ClipboardCopyOutcome::Indeterminate);
         sender.send(true).unwrap();
         assert_eq!(
             clipboard_worker_outcome(receiver.try_recv().map_err(|_| RecvTimeoutError::Timeout)),
@@ -842,7 +814,7 @@ pub(crate) mod tests {
     #[test]
     fn osc52_cap_does_not_limit_native_clipboard() {
         let text = "x".repeat(65 * 1024);
-        let outcome = copy_chat_text_with(
+        let outcome = copy_text_with_optional_osc52(
             text.clone(),
             true,
             |payload| {
@@ -851,7 +823,7 @@ pub(crate) mod tests {
             },
             |_| panic!("native success must bypass OSC 52"),
         );
-        assert_eq!(outcome, CopyOutcome::Copied);
+        assert_eq!(outcome, ClipboardCopyOutcome::Copied);
     }
 
     #[test]
@@ -867,7 +839,12 @@ pub(crate) mod tests {
                 &mut app,
                 &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 |text| {
-                    copy_chat_text_with(text, true, |_| NativeClipboardOutcome::Failed, |_| true)
+                    copy_text_with_optional_osc52(
+                        text,
+                        true,
+                        |_| NativeClipboardOutcome::Failed,
+                        |_| true,
+                    )
                 }
             ));
             assert!(app.chat_copy_session.is_none());

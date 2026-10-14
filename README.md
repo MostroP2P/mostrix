@@ -21,7 +21,7 @@ Current release: **[v0.3.6](https://github.com/MostroP2P/mostrix/releases/tag/v0
 - **My Trades** — active-trade workspace with kind-14 peer chat, attachments (Blossom), Shared-key disclose, and a contextual **keycap command bar** (`i` / Esc INSERT·COMMAND, **Ctrl+K** Actions).
 - **Full privacy** — opt-in on create/take; follow-up DMs honor `full_privacy` (My Trades shows Privacy vs Reputation).
 - **Own reputation** — status bar shows your rating; refreshed at startup and after trades.
-- **Chat copy** — range-select and copy messages in My Trades, Disputes, Observer, and solver DMs; optional **OSC 52** fallback for SSH (`clipboard_osc52`).
+- **Chat copy** — range-select and copy messages in My Trades, Disputes, Observer, and solver DMs; optional **OSC 52** fallback for SSH (`clipboard_osc52`, also invoice / order-ID; not seed or Shared key).
 - **Messages tab** — trade-step timeline, invoices / bonds, rate counterparty, cooperative cancel prompts.
 - **Admin / solvers** — take disputes, kind-14 party chat (BUYER / SELLER / SERBERO), finalize (pay buyer / refund seller / bond slash), Observer (Shared key), Serbero handoff takeover (**Ctrl+T**), optional **mostro-watchdog** Telegram alerts.
 - **Settings** — Mostro instance picker, relays, Blossom servers, currency filters, Lightning address, background alerts, Restore Session, key rotation / seed import.
@@ -113,7 +113,7 @@ push_server_url = "https://mostro-push-server.fly.dev"
 # Out-of-focus alerts: terminal bell, title badge, sound. Also Settings → Background Alerts.
 notifications_enabled = true
 
-# Chat-copy OSC 52 fallback after native clipboard failure (SSH). Restart after change.
+# OSC 52 fallback after native clipboard failure (chat + invoice/order-ID; not seed/Shared key; SSH). Restart after change.
 clipboard_osc52 = false
 
 # Admin: assistants (e.g. Serbero) allowed to DM your admin key, as npub or hex.
@@ -164,7 +164,7 @@ watchdog_pubkey = ""
 
 - **`notifications_enabled`** — Bell, window-title unread badge, and sound for new trade/chat messages while the terminal is unfocused. Toggle **Background Alerts** in Settings.
 
-- **`clipboard_osc52`** — Opt-in OSC 52 chat-copy fallback when the native clipboard fails (useful over SSH). Config-only; restart after changing. See [TUI — OSC 52](docs/TUI_INTERFACE.md#optional-terminal-clipboard-fallback-osc-52).
+- **`clipboard_osc52`** — Opt-in OSC 52 fallback when the native clipboard fails (chat copy, invoice **C**, My Trades order-ID via **Ctrl+K** → **I** → **Enter**; useful over SSH). Seed backup and Shared key **C** stay native-only. Config-only; restart after changing. See [TUI — OSC 52](docs/TUI_INTERFACE.md#optional-terminal-clipboard-fallback-osc-52).
 
 - **`trusted_dm_senders`** — Admin only: npub/hex list of assistants (e.g. Serbero) whose DMs to your admin key are shown per dispute. Empty = ignore such senders.
 
