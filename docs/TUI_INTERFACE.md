@@ -355,10 +355,10 @@ rendering. Shared wrapping checks include long unbroken tokens and wide Unicode.
 ### Optional Terminal Clipboard Fallback (OSC 52)
 
 Native clipboard copying runs first for chat selection (**Ctrl+C**, arrow keys,
-**Enter**) and for shortcut copies (invoice **C**, seed backup **C**, disclosed
-Shared key **C**, My Trades order-ID copy). To allow a terminal clipboard
-fallback when native copying fails, set this in your active `settings.toml` and
-restart Mostrix:
+**Enter**), for **C** shortcuts (invoice, seed backup, disclosed Shared key),
+and for My Trades order-ID copy (**Ctrl+K** → **I** → **Enter**). To allow a
+terminal clipboard fallback when native copying fails, set this in your active
+`settings.toml` and restart Mostrix:
 
 ```toml
 clipboard_osc52 = true
@@ -408,13 +408,15 @@ they do not write to the operating system clipboard.
   Check selection visibility and Solver DM identity. In Observer, verify Enter
   copies without fetching and Ctrl+L prevents stale fetch results from returning.
 - Check native clipboard persistence after returning to Mostrix on Windows,
-  macOS, X11, and Wayland as available. Check existing invoice, seed, Shared key,
-  order-ID, and attachment shortcuts outside selection.
+  macOS, X11, and Wayland as available. Outside chat selection, check invoice
+  **C**, seed backup **C**, disclosed Shared key **C**, My Trades order-ID copy
+  (**Ctrl+K**, select **I**, **Enter**), and attachment shortcuts.
 - Over SSH with the remote native clipboard unavailable, test OSC 52 opt-in off
-  and on (chat **and** invoice/seed/Shared key/order-ID **C**), restarting after
-  each setting change. Check the local clipboard, a blocked/unsupported
-  terminal, and a payload larger than 64 KiB. Test any tmux/screen setup
-  separately; a sent status is not proof of delivery.
+  and on for chat copy, the **C** shortcuts above, and My Trades order-ID copy
+  via **Ctrl+K** → **I** → **Enter**, restarting after each setting change.
+  Check the local clipboard, a blocked/unsupported terminal, and a payload
+  larger than 64 KiB. Test any tmux/screen setup separately; a sent status is
+  not proof of delivery.
 
 ## UI Components
 

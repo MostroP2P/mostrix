@@ -164,7 +164,7 @@ watchdog_pubkey = ""
 
 - **`notifications_enabled`** — Bell, window-title unread badge, and sound for new trade/chat messages while the terminal is unfocused. Toggle **Background Alerts** in Settings.
 
-- **`clipboard_osc52`** — Opt-in OSC 52 fallback when the native clipboard fails (chat copy and invoice / seed / Shared key / order-ID shortcuts; useful over SSH). Config-only; restart after changing. See [TUI — OSC 52](docs/TUI_INTERFACE.md#optional-terminal-clipboard-fallback-osc-52).
+- **`clipboard_osc52`** — Opt-in OSC 52 fallback when the native clipboard fails (chat copy, invoice/seed/Shared key **C**, and My Trades order-ID via **Ctrl+K** → **I** → **Enter**; useful over SSH). Config-only; restart after changing. See [TUI — OSC 52](docs/TUI_INTERFACE.md#optional-terminal-clipboard-fallback-osc-52).
 
 - **`trusted_dm_senders`** — Admin only: npub/hex list of assistants (e.g. Serbero) whose DMs to your admin key are shown per dispute. Empty = ignore such senders.
 
