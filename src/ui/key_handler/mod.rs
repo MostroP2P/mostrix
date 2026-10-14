@@ -1266,6 +1266,16 @@ fn rotate_focused_order_filter(state: &mut OrderBookFilterState, next: bool) {
                 if next { -1 } else { 1 },
             );
         }
+        OrderBookFilterField::SortBy => {
+            state.sort.key = if next {
+                state.sort.key.next()
+            } else {
+                state.sort.key.prev()
+            };
+        }
+        OrderBookFilterField::SortDirection => {
+            state.sort.direction = state.sort.direction.toggled();
+        }
         OrderBookFilterField::FiatCurrency => {
             // Without an open picker, ↑↓ open it and rotate the highlighted currency.
             if !state.currency_picker.open {
@@ -1292,8 +1302,10 @@ fn rotate_focused_order_filter(state: &mut OrderBookFilterState, next: bool) {
 
 fn apply_order_filters(app: &mut AppState, state: OrderBookFilterState) {
     app.order_filters = state.filters;
-    app.selected_order_id = None;
-    app.orders_table_state = ratatui::widgets::TableState::default();
+    app.order_sort = state.sort;
+    // Keep `selected_order_id`: sort never removes the UUID, and when a filter
+    // hides it the Orders projection resolver already falls back to the first
+    // visible row for highlight / Enter.
 }
 
 fn handle_order_filter_key(app: &mut AppState, code: KeyCode, key_event: &KeyEvent) -> bool {
@@ -1329,8 +1341,9 @@ fn handle_order_filter_key(app: &mut AppState, code: KeyCode, key_event: &KeyEve
             let inline = state.inline;
             apply_order_filters(app, state);
             if inline {
-                app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters(
+                app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters_and_sort(
                     app.order_filters.clone(),
+                    app.order_sort,
                     true,
                 ));
             } else {
@@ -1365,6 +1378,14 @@ fn handle_order_filter_key(app: &mut AppState, code: KeyCode, key_event: &KeyEve
         }
         KeyCode::Char(' ') if state.focused == OrderBookFilterField::Premium => {
             crate::ui::orders::step_order_book_premium(&mut state.filters.premium, 1);
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char(' ') if state.focused == OrderBookFilterField::SortBy => {
+            state.sort.key = state.sort.key.next();
+            app.mode = UiMode::OrderFilters(state);
+        }
+        KeyCode::Char(' ') if state.focused == OrderBookFilterField::SortDirection => {
+            state.sort.direction = state.sort.direction.toggled();
             app.mode = UiMode::OrderFilters(state);
         }
         KeyCode::Backspace
@@ -2458,8 +2479,9 @@ pub fn handle_key_event(
                     app.mode,
                     UiMode::Normal | UiMode::UserMode(UserMode::Normal)
                 ) {
-                    app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters(
+                    app.mode = UiMode::OrderFilters(OrderBookFilterState::from_filters_and_sort(
                         app.order_filters.clone(),
+                        app.order_sort,
                         false,
                     ));
                     return Some(true);
@@ -3144,6 +3166,86 @@ mod key_handler_tests {
             UiMode::OrderFilters(state) => assert_eq!(state.filters.premium, Some(1)),
             other => panic!("expected OrderFilters mode, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn sort_fields_cycle_and_apply_to_app_state() {
+        let mut app = AppState::new(UserRole::User);
+        let mut state = OrderBookFilterState::from_filters_and_sort(
+            OrderBookFilters::default(),
+            app.order_sort,
+            false,
+        );
+        state.focused = OrderBookFilterField::SortBy;
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Char(' '),
+            &KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        ));
+        match &app.mode {
+            UiMode::OrderFilters(state) => {
+                assert_eq!(state.sort.key.label(), "Fiat amount");
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Tab,
+            &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        ));
+        match &app.mode {
+            UiMode::OrderFilters(state) => {
+                assert_eq!(state.focused, OrderBookFilterField::SortDirection);
+            }
+            other => panic!("expected OrderFilters mode, got {other:?}"),
+        }
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Char(' '),
+            &KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        ));
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Enter,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ));
+
+        assert_eq!(app.order_sort.key.label(), "Fiat amount");
+        assert_eq!(app.order_sort.direction.label(), "Ascending");
+        assert!(matches!(app.mode, UiMode::UserMode(UserMode::Normal)));
+    }
+
+    #[test]
+    fn apply_sort_only_preserves_selected_order_id() {
+        let selected = Uuid::new_v4();
+        let mut app = AppState::new(UserRole::User);
+        app.selected_order_id = Some(selected);
+        let mut state = OrderBookFilterState::from_filters_and_sort(
+            OrderBookFilters::default(),
+            app.order_sort,
+            false,
+        );
+        state.focused = OrderBookFilterField::SortBy;
+        state.sort.key = state.sort.key.next();
+        app.mode = UiMode::OrderFilters(state);
+
+        assert!(handle_order_filter_key(
+            &mut app,
+            KeyCode::Enter,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ));
+
+        assert_eq!(
+            app.selected_order_id,
+            Some(selected),
+            "sort-only apply must not wipe the current Orders selection"
+        );
+        assert_eq!(app.order_sort.key.label(), "Fiat amount");
+        assert!(matches!(app.mode, UiMode::UserMode(UserMode::Normal)));
     }
 
     #[test]

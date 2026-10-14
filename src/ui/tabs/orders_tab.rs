@@ -11,10 +11,12 @@ use ratatui::widgets::{
 
 use crate::ui::currencies::{filter_options, resolve_options};
 use crate::ui::helpers::{
-    format_local_timestamp, format_premium, get_filtered_book_orders, render_table_list_scrollbar,
-    selected_book_display_idx,
+    format_local_timestamp, format_premium, get_sorted_filtered_book_orders,
+    render_table_list_scrollbar, selected_book_display_idx,
 };
-use crate::ui::orders::{orders_filter_inline_layout, OrderBookFilterField, OrderBookFilterState};
+use crate::ui::orders::{
+    orders_filter_inline_layout, OrderBookFilterField, OrderBookFilterState, OrderBookSort,
+};
 use crate::ui::{apply_kind_color, AppState, UiMode, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 /// Renders the available orders table, with fewer columns when terminal width is limited.
@@ -63,11 +65,7 @@ pub fn render_orders_tab(
             state.inline = use_inline;
         }
         let editing_filters = matches!(app.mode, UiMode::OrderFilters(_));
-        let show_bar = if use_inline {
-            true
-        } else {
-            app.order_filters.has_active_filters() && !editing_filters
-        };
+        let show_bar = show_order_filter_bar(app, use_inline, editing_filters);
         let (filter_area, table_area) = split_filter_and_table(area, show_bar, use_inline);
         if let Some(filter_area) = filter_area {
             if let UiMode::OrderFilters(ref state) = app.mode {
@@ -101,18 +99,18 @@ pub fn render_orders_tab(
         return;
     }
 
-    let filtered =
-        get_filtered_book_orders(&orders_lock, &app.currencies_filter, &app.order_filters);
+    let filtered = get_sorted_filtered_book_orders(
+        &orders_lock,
+        &app.currencies_filter,
+        &app.order_filters,
+        &app.order_sort,
+    );
     let use_inline = orders_filter_inline_layout(area.width, area.height);
     if let UiMode::OrderFilters(ref mut state) = app.mode {
         state.inline = use_inline;
     }
     let editing_filters = matches!(app.mode, UiMode::OrderFilters(_));
-    let show_bar = if use_inline {
-        true
-    } else {
-        app.order_filters.has_active_filters() && !editing_filters
-    };
+    let show_bar = show_order_filter_bar(app, use_inline, editing_filters);
     let (filter_area, table_area) = split_filter_and_table(area, show_bar, use_inline);
     if let Some(filter_area) = filter_area {
         if let UiMode::OrderFilters(ref state) = app.mode {
@@ -323,12 +321,19 @@ fn split_filter_and_table(area: Rect, show_bar: bool, use_inline: bool) -> (Opti
     (Some(chunks[0]), chunks[1])
 }
 
+fn show_order_filter_bar(app: &AppState, use_inline: bool, editing_filters: bool) -> bool {
+    use_inline
+        || ((app.order_filters.has_active_filters() || app.order_sort != OrderBookSort::default())
+            && !editing_filters)
+}
+
 fn render_order_filter_bar(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
     let summary = app.order_filters.summary();
+    let sort_summary = app.order_sort.summary();
     let hint = if area.width < 80 {
-        "Shift+F filters | Shift+X clear"
+        "Shift+F filters/sort | Shift+X clear"
     } else {
-        "Shift+F: edit filters | Shift+X: clear filters | Enter: take/cancel selected order"
+        "Shift+F: edit filters/sort | Shift+X: clear filters | Enter: take/cancel selected order"
     };
     let text = vec![
         Line::from(vec![
@@ -339,13 +344,15 @@ fn render_order_filter_bar(f: &mut ratatui::Frame, area: Rect, app: &AppState) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(summary, Style::default().fg(Color::White)),
+            Span::styled("  Sort: ", Style::default().fg(PRIMARY_COLOR)),
+            Span::styled(sort_summary, Style::default().fg(Color::White)),
         ]),
         Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
     ];
     f.render_widget(
         Paragraph::new(text).block(
             Block::default()
-                .title("Order Filters")
+                .title("Order Filters & Sort")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -361,7 +368,7 @@ fn render_order_filter_editable_bar(
     state: &OrderBookFilterState,
 ) {
     let block = Block::default()
-        .title(" Order Filters (editing) ")
+        .title(" Order Filters & Sort (editing) ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -382,6 +389,8 @@ fn render_order_filter_editable_bar(
             OrderBookFilterField::Kind => "Kind",
             OrderBookFilterField::FiatCurrency => "Fiat",
             OrderBookFilterField::Premium => "Premium",
+            OrderBookFilterField::SortBy => "Sort",
+            OrderBookFilterField::SortDirection => "Dir",
         };
         let text = format!("{label}:{value}");
         if selected {
@@ -404,6 +413,10 @@ fn render_order_filter_editable_bar(
             chip(OrderBookFilterField::FiatCurrency),
             Span::raw(" "),
             chip(OrderBookFilterField::Premium),
+            Span::raw(" "),
+            chip(OrderBookFilterField::SortBy),
+            Span::raw(" "),
+            chip(OrderBookFilterField::SortDirection),
         ])),
         rows[0],
     );
@@ -434,6 +447,10 @@ fn filter_field_display_colored(
             crate::ui::orders::order_book_premium_label(state.filters.premium),
             crate::ui::orders::order_book_premium_color(state.filters.premium),
         ),
+        OrderBookFilterField::SortBy => (state.sort.key.label().to_string(), Color::White),
+        OrderBookFilterField::SortDirection => {
+            (state.sort.direction.label().to_string(), Color::White)
+        }
     }
 }
 
@@ -581,7 +598,7 @@ pub fn render_order_filter_popup(f: &mut ratatui::Frame, state: &OrderBookFilter
     f.render_widget(
         Paragraph::new(lines).alignment(Alignment::Left).block(
             Block::default()
-                .title("Order Filters")
+                .title("Order Filters & Sort")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(PRIMARY_COLOR))
@@ -637,7 +654,9 @@ fn compact_order_filter_popup_lines(
             ("Shift+X", "Clear"),
         ]));
     } else {
-        lines.push(shortcut_line(&[("Shift+X", "Clear")]));
+        // At the 36×6 popup boundary, keep Tab so Sort by / Direction stay
+        // reachable from the default Kind field; drop ↑↓ to save a row.
+        lines.push(shortcut_line(&[("Tab", "Field"), ("Shift+X", "Clear")]));
     }
 
     lines.push(Line::from(Span::styled(
@@ -667,10 +686,15 @@ fn compact_order_filter_popup_lines(
 fn active_filters_line(state: &OrderBookFilterState, inner_width: usize) -> Line<'static> {
     if state.filters.has_active_filters() {
         let summary_width = inner_width.saturating_sub("Active: ".len());
+        let summary = format!(
+            "{} | sort={}",
+            state.filters.summary(),
+            state.sort.summary()
+        );
         Line::from(vec![
             Span::styled("Active: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                truncate_for_cell(&state.filters.summary(), summary_width)
+                truncate_for_cell(&summary, summary_width)
                     .trim_end()
                     .to_string(),
                 Style::default()
@@ -679,13 +703,11 @@ fn active_filters_line(state: &OrderBookFilterState, inner_width: usize) -> Line
             ),
         ])
     } else {
+        let summary = format!("Active: no filters. Sort: {}", state.sort.summary());
         Line::from(Span::styled(
-            truncate_for_cell(
-                "Active: no filters. Set fields below, then press Enter.",
-                inner_width,
-            )
-            .trim_end()
-            .to_string(),
+            truncate_for_cell(&summary, inner_width)
+                .trim_end()
+                .to_string(),
             Style::default().fg(Color::DarkGray),
         ))
     }
@@ -782,6 +804,8 @@ fn focused_field_hint_line(field: OrderBookFilterField, inner_width: usize) -> L
         OrderBookFilterField::Premium => {
             "↑↓ step premium by 1% (+ green / 0 white / − red). Backspace clears to Any."
         }
+        OrderBookFilterField::SortBy => "↑↓ or Space cycles the order-book sort key.",
+        OrderBookFilterField::SortDirection => "↑↓ or Space toggles ascending / descending.",
     };
     Line::from(vec![
         Span::styled("Hint: ", Style::default().fg(PRIMARY_COLOR)),
@@ -828,6 +852,8 @@ fn filter_field_value(state: &OrderBookFilterState, field: OrderBookFilterField)
         OrderBookFilterField::Premium => {
             crate::ui::orders::order_book_premium_label(state.filters.premium)
         }
+        OrderBookFilterField::SortBy => state.sort.key.label().to_string(),
+        OrderBookFilterField::SortDirection => state.sort.direction.label().to_string(),
     }
 }
 
@@ -848,7 +874,7 @@ mod tests {
     use ratatui::Terminal;
     use uuid::Uuid;
 
-    use crate::ui::orders::OrderBookFilters;
+    use crate::ui::orders::{OrderBookFilters, OrderBookSortDirection, OrderBookSortKey};
     use crate::ui::{UiMode, UserRole};
 
     fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
@@ -922,7 +948,52 @@ mod tests {
         assert!(buffer_contains(buf, "Filters:"));
         assert!(buffer_contains(buf, "fiat=USD"));
         assert!(buffer_contains(buf, "premium=+3%"));
-        assert!(buffer_contains(buf, "Shift+F: edit filters"));
+        assert!(buffer_contains(buf, "Sort:"));
+        assert!(buffer_contains(buf, "Created Descending"));
+        assert!(buffer_contains(buf, "Shift+F: edit filters/sort"));
+    }
+
+    #[test]
+    fn compact_orders_table_shows_non_default_sort_summary_without_filters() {
+        let backend = TestBackend::new(90, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(vec![sample_order("SEPA", 2)]));
+        let mut app = AppState::new(UserRole::User);
+        app.order_sort = OrderBookSort {
+            key: OrderBookSortKey::Premium,
+            direction: OrderBookSortDirection::Ascending,
+        };
+
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Filters:"));
+        assert!(buffer_contains(buf, "none"));
+        assert!(buffer_contains(buf, "Sort:"));
+        assert!(buffer_contains(buf, "Premium Ascending"));
+    }
+
+    #[test]
+    fn compact_empty_orders_table_shows_non_default_sort_summary() {
+        let backend = TestBackend::new(90, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let orders = Arc::new(Mutex::new(Vec::new()));
+        let mut app = AppState::new(UserRole::User);
+        app.order_sort = OrderBookSort {
+            key: OrderBookSortKey::Premium,
+            direction: OrderBookSortDirection::Ascending,
+        };
+
+        terminal
+            .draw(|f| render_orders_tab(f, f.area(), &orders, &mut app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert!(buffer_contains(buf, "Sort:"));
+        assert!(buffer_contains(buf, "Premium Ascending"));
+        assert!(buffer_contains(buf, "No offers found"));
     }
 
     #[test]
@@ -944,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn order_filter_popup_lists_kind_fiat_and_premium() {
+    fn order_filter_popup_lists_filter_and_sort_fields() {
         let backend = TestBackend::new(90, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = OrderBookFilterState::default();
@@ -958,7 +1029,11 @@ mod tests {
         assert!(buffer_contains(buf, "Buy/Sell"));
         assert!(buffer_contains(buf, "Fiat currency"));
         assert!(buffer_contains(buf, "Premium"));
+        assert!(buffer_contains(buf, "Sort by"));
+        assert!(buffer_contains(buf, "Direction"));
         assert!(buffer_contains(buf, "-2%"));
+        assert!(buffer_contains(buf, "Created"));
+        assert!(buffer_contains(buf, "Descending"));
         assert!(buffer_contains(buf, "Shift+X Clear"));
         assert!(!buffer_contains(buf, "Payment method"));
         assert!(!buffer_contains(buf, "Created within"));
@@ -1012,7 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn tiny_order_filter_popup_keeps_clear_shortcut_and_value_visible() {
+    fn tiny_order_filter_popup_keeps_tab_clear_and_value_visible() {
         let backend = TestBackend::new(36, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         let state = OrderBookFilterState {
@@ -1029,6 +1104,10 @@ mod tests {
             .unwrap();
 
         let buf = terminal.backend().buffer();
+        assert!(
+            buffer_contains(buf, "Tab Field"),
+            "36×6 must keep Tab so Sort by / Direction stay reachable"
+        );
         assert!(buffer_contains(buf, "Shift+X Clear"));
         assert!(buffer_contains(buf, "Premium"));
         assert!(buffer_contains(buf, "+3%"));
@@ -1293,12 +1372,14 @@ mod tests {
             .unwrap();
 
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "Order Filters (editing)"));
+        assert!(buffer_contains(buf, "Order Filters & Sort (editing)"));
         assert!(buffer_contains(buf, "Kind:"));
         assert!(buffer_contains(buf, "Fiat:USD▾"));
         assert!(buffer_contains(buf, "Premium:"));
+        assert!(buffer_contains(buf, "Sort:Created"));
+        assert!(buffer_contains(buf, "Dir:Descending"));
         assert!(buffer_contains(buf, "Tab field"));
-        assert!(!buffer_contains(buf, "Shift+F: edit filters"));
+        assert!(!buffer_contains(buf, "Shift+F: edit filters/sort"));
     }
 
     #[test]
@@ -1318,7 +1399,7 @@ mod tests {
             .unwrap();
 
         let buf = terminal.backend().buffer();
-        assert!(!buffer_contains(buf, "Order Filters (editing)"));
+        assert!(!buffer_contains(buf, "Order Filters & Sort (editing)"));
         assert!(!buffer_contains(buf, "Filters:"));
         assert!(buffer_contains(buf, "SEPA"));
     }
@@ -1340,7 +1421,7 @@ mod tests {
             .unwrap();
 
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "Order Filters (editing)"));
+        assert!(buffer_contains(buf, "Order Filters & Sort (editing)"));
         assert!(buffer_contains(buf, "Fiat:EUR▾"));
         assert!(buffer_contains(buf, "No offers match"));
     }
@@ -1368,7 +1449,7 @@ mod tests {
             other => panic!("expected OrderFilters, got {other:?}"),
         }
         let buf = terminal.backend().buffer();
-        assert!(buffer_contains(buf, "Order Filters (editing)"));
+        assert!(buffer_contains(buf, "Order Filters & Sort (editing)"));
         assert!(buffer_contains(buf, "No offers found"));
     }
 

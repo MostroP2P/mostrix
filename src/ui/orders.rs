@@ -91,10 +91,18 @@ pub enum OrderBookFilterField {
     Kind,
     FiatCurrency,
     Premium,
+    SortBy,
+    SortDirection,
 }
 
 impl OrderBookFilterField {
-    pub const ALL: [Self; 3] = [Self::Kind, Self::FiatCurrency, Self::Premium];
+    pub const ALL: [Self; 5] = [
+        Self::Kind,
+        Self::FiatCurrency,
+        Self::Premium,
+        Self::SortBy,
+        Self::SortDirection,
+    ];
 
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -102,6 +110,8 @@ impl OrderBookFilterField {
             Self::Kind => "Buy/Sell",
             Self::FiatCurrency => "Fiat currency",
             Self::Premium => "Premium",
+            Self::SortBy => "Sort by",
+            Self::SortDirection => "Direction",
         }
     }
 
@@ -157,9 +167,97 @@ impl OrderBookFilters {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OrderBookSortKey {
+    #[default]
+    Created,
+    FiatAmount,
+    Premium,
+    FiatCurrency,
+    PaymentMethod,
+    Kind,
+}
+
+impl OrderBookSortKey {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Created => "Created",
+            Self::FiatAmount => "Fiat amount",
+            Self::Premium => "Premium",
+            Self::FiatCurrency => "Fiat",
+            Self::PaymentMethod => "Payment method",
+            Self::Kind => "Buy/Sell",
+        }
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Created => Self::FiatAmount,
+            Self::FiatAmount => Self::Premium,
+            Self::Premium => Self::FiatCurrency,
+            Self::FiatCurrency => Self::PaymentMethod,
+            Self::PaymentMethod => Self::Kind,
+            Self::Kind => Self::Created,
+        }
+    }
+
+    #[must_use]
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Created => Self::Kind,
+            Self::FiatAmount => Self::Created,
+            Self::Premium => Self::FiatAmount,
+            Self::FiatCurrency => Self::Premium,
+            Self::PaymentMethod => Self::FiatCurrency,
+            Self::Kind => Self::PaymentMethod,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OrderBookSortDirection {
+    #[default]
+    Descending,
+    Ascending,
+}
+
+impl OrderBookSortDirection {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Descending => "Descending",
+            Self::Ascending => "Ascending",
+        }
+    }
+
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Descending => Self::Ascending,
+            Self::Ascending => Self::Descending,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OrderBookSort {
+    pub key: OrderBookSortKey,
+    pub direction: OrderBookSortDirection,
+}
+
+impl OrderBookSort {
+    #[must_use]
+    pub fn summary(self) -> String {
+        format!("{} {}", self.key.label(), self.direction.label())
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OrderBookFilterState {
     pub filters: OrderBookFilters,
+    pub sort: OrderBookSort,
     pub focused: OrderBookFilterField,
     /// Searchable currency dropdown (Create Order style).
     pub currency_picker: CurrencyPicker,
@@ -171,8 +269,19 @@ impl OrderBookFilterState {
     /// Draft editor seeded from the applied session filters.
     #[must_use]
     pub fn from_filters(filters: OrderBookFilters, inline: bool) -> Self {
+        Self::from_filters_and_sort(filters, OrderBookSort::default(), inline)
+    }
+
+    /// Draft editor seeded from the applied session filters and sort.
+    #[must_use]
+    pub fn from_filters_and_sort(
+        filters: OrderBookFilters,
+        sort: OrderBookSort,
+        inline: bool,
+    ) -> Self {
         Self {
             filters,
+            sort,
             focused: OrderBookFilterField::Kind,
             currency_picker: CurrencyPicker::default(),
             inline,

@@ -19,7 +19,7 @@ use crate::ui::key_handler::chat_copy::{ChatCopyFeedback, ChatCopySession};
 use crate::ui::navigation::{AdminTab, Tab, UserRole};
 use crate::ui::orders::{
     BuyerInvoicePreference, FormState, InvoiceInputState, KeyInputState, MessageNotification,
-    MessageViewState, OperationResult, OrderBookFilterState, OrderBookFilters,
+    MessageViewState, OperationResult, OrderBookFilterState, OrderBookFilters, OrderBookSort,
     OrderChatStaticHeader, OrderMessage, RatingOrderState,
 };
 use crate::ui::terminal_alert::TerminalAlertState;
@@ -430,6 +430,8 @@ pub struct AppState {
     pub currencies_filter: Vec<String>,
     /// Orders-tab local filters, applied after the settings currency filter.
     pub order_filters: OrderBookFilters,
+    /// Orders-tab local sort, applied after currency and local filters.
+    pub order_sort: OrderBookSort,
     /// Cached Mostro instance info (kind 38385), if available.
     /// Populated only from client-authenticated fetches; apply via [`Self::set_mostro_info`].
     pub mostro_info: Option<MostroInstanceInfo>,
@@ -557,6 +559,7 @@ impl AppState {
             pending_admin_disputes_reload: false,
             currencies_filter: Vec::new(),
             order_filters: OrderBookFilters::default(),
+            order_sort: OrderBookSort::default(),
             mostro_info: None,
             own_reputation: None,
             own_reputation_generation: 0,

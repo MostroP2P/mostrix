@@ -9,7 +9,9 @@ use std::collections::HashSet;
 use mostro_core::prelude::{Kind, SmallOrder};
 use uuid::Uuid;
 
-use crate::ui::orders::{OrderBookFilters, OrderBookKindFilter};
+use crate::ui::orders::{
+    OrderBookFilters, OrderBookKindFilter, OrderBookSort, OrderBookSortDirection, OrderBookSortKey,
+};
 use crate::ui::AppState;
 
 /// Whether `order` passes the active currency filter (empty filter = all pass).
@@ -53,13 +55,72 @@ pub fn get_filtered_book_orders(
     currencies_filter: &[String],
     order_filters: &OrderBookFilters,
 ) -> Vec<(usize, SmallOrder)> {
-    orders
+    get_sorted_filtered_book_orders(
+        orders,
+        currencies_filter,
+        order_filters,
+        &OrderBookSort::default(),
+    )
+}
+
+/// Filtered and sorted book rows as `(original_index, order)` pairs.
+pub fn get_sorted_filtered_book_orders(
+    orders: &[SmallOrder],
+    currencies_filter: &[String],
+    order_filters: &OrderBookFilters,
+    order_sort: &OrderBookSort,
+) -> Vec<(usize, SmallOrder)> {
+    let mut filtered = orders
         .iter()
         .enumerate()
         .filter(|(_, o)| order_passes_currency_filter(o, currencies_filter))
         .filter(|(_, o)| order_passes_order_filters(o, order_filters))
         .map(|(i, o)| (i, o.clone()))
-        .collect()
+        .collect::<Vec<_>>();
+    sort_book_orders(&mut filtered, order_sort);
+    filtered
+}
+
+fn fiat_sort_amount(order: &SmallOrder) -> i64 {
+    if order.fiat_amount != 0 {
+        order.fiat_amount
+    } else {
+        order.min_amount.unwrap_or(0)
+    }
+}
+
+fn kind_sort_label(order: &SmallOrder) -> &'static str {
+    match order.kind {
+        Some(Kind::Buy) => "buy",
+        Some(Kind::Sell) => "sell",
+        _ => "",
+    }
+}
+
+fn sort_book_orders(orders: &mut [(usize, SmallOrder)], order_sort: &OrderBookSort) {
+    orders.sort_by(|(a_idx, a), (b_idx, b)| {
+        let ordering = match order_sort.key {
+            OrderBookSortKey::Created => a.created_at.unwrap_or(0).cmp(&b.created_at.unwrap_or(0)),
+            OrderBookSortKey::FiatAmount => fiat_sort_amount(a).cmp(&fiat_sort_amount(b)),
+            OrderBookSortKey::Premium => a.premium.cmp(&b.premium),
+            OrderBookSortKey::FiatCurrency => a
+                .fiat_code
+                .to_ascii_uppercase()
+                .cmp(&b.fiat_code.to_ascii_uppercase()),
+            OrderBookSortKey::PaymentMethod => a
+                .payment_method
+                .to_ascii_lowercase()
+                .cmp(&b.payment_method.to_ascii_lowercase()),
+            OrderBookSortKey::Kind => kind_sort_label(a).cmp(kind_sort_label(b)),
+        };
+        let directed = match order_sort.direction {
+            OrderBookSortDirection::Ascending => ordering,
+            OrderBookSortDirection::Descending => ordering.reverse(),
+        };
+        directed
+            .then_with(|| b.created_at.unwrap_or(0).cmp(&a.created_at.unwrap_or(0)))
+            .then_with(|| a_idx.cmp(b_idx))
+    });
 }
 
 /// Display row of the current selection inside `filtered`.
@@ -85,7 +146,12 @@ pub fn selected_book_display_idx(
 /// Resolves `selected_order_id` against the currency-filtered book so Enter/take
 /// always acts on the highlighted row — never on a row hidden by the filter.
 pub fn selected_filtered_book_order(app: &AppState, orders: &[SmallOrder]) -> Option<SmallOrder> {
-    let mut filtered = get_filtered_book_orders(orders, &app.currencies_filter, &app.order_filters);
+    let mut filtered = get_sorted_filtered_book_orders(
+        orders,
+        &app.currencies_filter,
+        &app.order_filters,
+        &app.order_sort,
+    );
     let idx = selected_book_display_idx(app.selected_order_id, &filtered)?;
     Some(filtered.swap_remove(idx).1)
 }
@@ -93,7 +159,12 @@ pub fn selected_filtered_book_order(app: &AppState, orders: &[SmallOrder]) -> Op
 /// Move Orders-tab selection `delta` rows within the filtered book, clamping at
 /// both ends, and store the landing order's id (when present).
 pub fn move_book_order_selection(app: &mut AppState, orders: &[SmallOrder], delta: isize) {
-    let filtered = get_filtered_book_orders(orders, &app.currencies_filter, &app.order_filters);
+    let filtered = get_sorted_filtered_book_orders(
+        orders,
+        &app.currencies_filter,
+        &app.order_filters,
+        &app.order_sort,
+    );
     let Some(idx) = selected_book_display_idx(app.selected_order_id, &filtered) else {
         app.selected_order_id = None;
         return;
@@ -107,7 +178,10 @@ pub fn move_book_order_selection(app: &mut AppState, orders: &[SmallOrder], delt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::orders::{OrderBookFilters, OrderBookKindFilter};
+    use crate::ui::orders::{
+        OrderBookFilters, OrderBookKindFilter, OrderBookSort, OrderBookSortDirection,
+        OrderBookSortKey,
+    };
     use crate::ui::UserRole;
     use mostro_core::prelude::Kind;
 
@@ -128,6 +202,22 @@ mod tests {
             kind: Some(Kind::Sell),
             ..order(id, fiat, payment)
         }
+    }
+
+    fn sorted_ids(
+        orders: &[SmallOrder],
+        key: OrderBookSortKey,
+        direction: OrderBookSortDirection,
+    ) -> Vec<Uuid> {
+        get_sorted_filtered_book_orders(
+            orders,
+            &[],
+            &OrderBookFilters::default(),
+            &OrderBookSort { key, direction },
+        )
+        .into_iter()
+        .filter_map(|(_, order)| order.id)
+        .collect()
     }
 
     #[test]
@@ -226,6 +316,145 @@ mod tests {
         );
     }
 
+    #[test]
+    fn default_sort_keeps_newest_created_orders_first() {
+        let old = Uuid::new_v4();
+        let new = Uuid::new_v4();
+        let orders = vec![
+            SmallOrder {
+                created_at: Some(10),
+                ..order(old, "USD", "cash")
+            },
+            SmallOrder {
+                created_at: Some(20),
+                ..order(new, "USD", "cash")
+            },
+        ];
+
+        let filtered = get_filtered_book_orders(&orders, &[], &OrderBookFilters::default());
+
+        assert_eq!(
+            filtered
+                .into_iter()
+                .filter_map(|(_, order)| order.id)
+                .collect::<Vec<_>>(),
+            vec![new, old]
+        );
+    }
+
+    #[test]
+    fn sorting_orders_by_numeric_fields_respects_direction() {
+        let low = Uuid::new_v4();
+        let high = Uuid::new_v4();
+        let range = Uuid::new_v4();
+        let orders = vec![
+            SmallOrder {
+                fiat_amount: 50,
+                premium: -3,
+                ..order(low, "USD", "cash")
+            },
+            SmallOrder {
+                fiat_amount: 850,
+                premium: 5,
+                ..order(high, "USD", "cash")
+            },
+            SmallOrder {
+                fiat_amount: 0,
+                min_amount: Some(100),
+                max_amount: Some(1_000),
+                premium: 0,
+                ..order(range, "USD", "cash")
+            },
+        ];
+
+        assert_eq!(
+            sorted_ids(
+                &orders,
+                OrderBookSortKey::FiatAmount,
+                OrderBookSortDirection::Ascending
+            ),
+            vec![low, range, high]
+        );
+        assert_eq!(
+            sorted_ids(
+                &orders,
+                OrderBookSortKey::FiatAmount,
+                OrderBookSortDirection::Descending
+            ),
+            vec![high, range, low]
+        );
+        assert_eq!(
+            sorted_ids(
+                &orders,
+                OrderBookSortKey::Premium,
+                OrderBookSortDirection::Ascending
+            ),
+            vec![low, range, high]
+        );
+    }
+
+    #[test]
+    fn sorting_orders_by_text_fields_is_case_insensitive() {
+        let mxn = Uuid::new_v4();
+        let eur = Uuid::new_v4();
+        let usd = Uuid::new_v4();
+        let orders = vec![
+            SmallOrder {
+                payment_method: "zelle".to_string(),
+                ..order(usd, "usd", "zelle")
+            },
+            SmallOrder {
+                payment_method: "Cash".to_string(),
+                ..order(mxn, "MXN", "Cash")
+            },
+            SmallOrder {
+                payment_method: "bank".to_string(),
+                ..order(eur, "eur", "bank")
+            },
+        ];
+
+        assert_eq!(
+            sorted_ids(
+                &orders,
+                OrderBookSortKey::FiatCurrency,
+                OrderBookSortDirection::Ascending
+            ),
+            vec![eur, mxn, usd]
+        );
+        assert_eq!(
+            sorted_ids(
+                &orders,
+                OrderBookSortKey::PaymentMethod,
+                OrderBookSortDirection::Ascending
+            ),
+            vec![eur, mxn, usd]
+        );
+    }
+
+    #[test]
+    fn sorting_orders_by_kind_groups_buy_and_sell() {
+        let buy = Uuid::new_v4();
+        let sell = Uuid::new_v4();
+        let unknown = Uuid::new_v4();
+        let orders = vec![
+            sell_order(sell, "USD", "cash"),
+            SmallOrder {
+                kind: None,
+                ..order(unknown, "USD", "cash")
+            },
+            order(buy, "USD", "cash"),
+        ];
+
+        assert_eq!(
+            sorted_ids(
+                &orders,
+                OrderBookSortKey::Kind,
+                OrderBookSortDirection::Ascending
+            ),
+            vec![unknown, buy, sell]
+        );
+    }
+
     /// Regression for the highlight/Enter mismatch: after a currency filter hides
     /// the previously selected order, resolution must fall back to the first
     /// *visible* row — the same one the table highlights — never the hidden id.
@@ -301,6 +530,45 @@ mod tests {
             Some(eur_a),
             "clamped at top of visible list"
         );
+    }
+
+    #[test]
+    fn move_selection_follows_sorted_projection() {
+        let low = Uuid::new_v4();
+        let mid = Uuid::new_v4();
+        let high = Uuid::new_v4();
+        let orders = vec![
+            SmallOrder {
+                fiat_amount: 300,
+                ..order(high, "USD", "high")
+            },
+            SmallOrder {
+                fiat_amount: 100,
+                ..order(low, "USD", "low")
+            },
+            SmallOrder {
+                fiat_amount: 200,
+                ..order(mid, "USD", "mid")
+            },
+        ];
+        let mut app = AppState::new(UserRole::User);
+        app.order_sort = OrderBookSort {
+            key: OrderBookSortKey::FiatAmount,
+            direction: OrderBookSortDirection::Ascending,
+        };
+
+        move_book_order_selection(&mut app, &orders, 1);
+        assert_eq!(
+            app.selected_order_id,
+            Some(mid),
+            "selection starts from first sorted row, then moves down"
+        );
+
+        move_book_order_selection(&mut app, &orders, 1);
+        assert_eq!(app.selected_order_id, Some(high));
+
+        move_book_order_selection(&mut app, &orders, -1);
+        assert_eq!(app.selected_order_id, Some(mid));
     }
 
     #[test]
