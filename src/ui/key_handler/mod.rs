@@ -450,7 +450,8 @@ fn reset_disclosure_copied_indicator(mode: &mut UiMode, key_event: &KeyEvent) {
 /// Only `conv_hex` (the Shared key) is ever copied — the signing key itself
 /// is never disclosed. Returns `true` if the popup was open and handled the key.
 fn copy_disclosed_shared_key_if_open(mode: &mut UiMode) -> bool {
-    copy_disclosed_shared_key_if_open_with(mode, handle_clipboard_copy)
+    // Shared keys must never ride OSC 52 via the legacy chat-scoped flag.
+    copy_disclosed_shared_key_if_open_with(mode, handle_clipboard_copy_native_only)
 }
 
 /// Testable core of [`copy_disclosed_shared_key_if_open`]; `copy_fn` is injected
@@ -616,14 +617,12 @@ pub(crate) fn clipboard_osc52_enabled() -> bool {
         .is_some_and(|settings| settings.clipboard_osc52)
 }
 
-/// Handle clipboard copy for text (invoice, Shared key, seed, order ID, etc.).
+/// Clipboard copy for chat-adjacent / operational text (invoice, order ID).
 ///
-/// Returns whether the write actually succeeded — `copied_to_clipboard` at the
-/// call site should only be set to `true` when this returns `true`, not merely
-/// because a copy attempt was made. On Linux the native write runs on a
-/// background thread that keeps serving the selection after the result is
-/// reported. When `clipboard_osc52` is enabled and native copy fails, falls
-/// back to OSC 52 (same rules as chat copy).
+/// When `clipboard_osc52` is enabled and the native write fails, falls back to
+/// OSC 52. Do **not** use this for recovery seeds or disclosed Shared keys —
+/// those stay on [`handle_clipboard_copy_native_only`] so an existing chat-only
+/// opt-in does not silently emit higher-sensitivity secrets over SSH.
 fn handle_clipboard_copy(text: String) -> bool {
     copy_text_with_optional_osc52(
         text,
@@ -631,6 +630,18 @@ fn handle_clipboard_copy(text: String) -> bool {
         copy_to_native_clipboard,
         copy_with_osc52,
     )
+    .succeeded()
+}
+
+/// Native-only clipboard copy for recovery seeds and disclosed Shared keys.
+///
+/// Never attempts OSC 52, even when `clipboard_osc52` is enabled — that flag
+/// remains scoped to chat / invoice / order-ID so upgrades do not silently
+/// send higher-sensitivity secrets over the terminal/SSH chain.
+fn handle_clipboard_copy_native_only(text: String) -> bool {
+    copy_text_with_optional_osc52(text, false, copy_to_native_clipboard, |_| {
+        unreachable!("secret clipboard copy disables OSC 52")
+    })
     .succeeded()
 }
 
@@ -2932,7 +2943,7 @@ pub fn handle_key_event(
                 } = app.mode
                 {
                     let text = mnemonic.to_string();
-                    *copied_to_clipboard = handle_clipboard_copy(text);
+                    *copied_to_clipboard = handle_clipboard_copy_native_only(text);
                 }
             }
             Some(true)
@@ -3029,11 +3040,30 @@ mod key_handler_tests {
                             (NativeClipboardOutcome::Copied, _, _)
                                 | (NativeClipboardOutcome::Failed, true, true)
                         ),
-                        "invoice/seed/key shortcuts must treat OSC 52 success as copied"
+                        "invoice/order-ID shortcuts may treat OSC 52 success as copied"
                     );
                 }
             }
         }
+    }
+
+    #[test]
+    fn secret_clipboard_copy_never_attempts_osc52() {
+        // Seeds / Shared keys must stay native-only even if the chat OSC 52
+        // flag is on — regression for silent upgrade opt-in of secrets.
+        let mut terminal_called = false;
+        let outcome = copy_text_with_optional_osc52(
+            "abandon ability able".into(),
+            false, // native-only path forces osc52_enabled=false
+            |_| NativeClipboardOutcome::Failed,
+            |_| {
+                terminal_called = true;
+                true
+            },
+        );
+        assert!(!terminal_called);
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome, ClipboardCopyOutcome::Unavailable);
     }
 
     #[test]

@@ -34,10 +34,11 @@ This document provides a comprehensive analysis of the Settings tab features imp
   omit it also disable the fallback. It is preserved when settings are saved.
 - **Configuration**: Set `clipboard_osc52 = true` in the active `settings.toml` and
   restart Mostrix. This is a config-only option, not a Settings tab toggle.
-- **Scope**: Chat-message copying, **C** shortcuts (invoice, seed backup,
-  disclosed Shared key), and My Trades order-ID copy (**Ctrl+K** → **I** →
-  **Enter**). Native clipboard copying remains first; OSC 52 is attempted only
-  after confirmed native failure and explicit opt-in.
+- **Scope**: Chat-message copying, invoice **C**, and My Trades order-ID copy
+  (**Ctrl+K** → **I** → **Enter**). Native clipboard copying remains first;
+  OSC 52 is attempted only after confirmed native failure and explicit opt-in.
+  Recovery seed backup **C** and disclosed Shared key **C** never use OSC 52
+  via this flag (keeps the legacy chat opt-in from silently covering secrets).
 - **Unconfirmed native writes**: A Linux worker timeout or disconnected result
   channel reports **Clipboard result unknown** without attempting OSC 52, since
   the native worker may still copy the text later.
