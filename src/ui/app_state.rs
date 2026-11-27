@@ -17,6 +17,7 @@ use crate::ui::chat::{
 use crate::ui::helpers::OrderChatListItem;
 use crate::ui::key_handler::chat_copy::{ChatCopyFeedback, ChatCopySession};
 use crate::ui::navigation::{AdminTab, Tab, UserRole};
+use crate::ui::order_info_popup::FinalizationOrderCheck;
 use crate::ui::orders::{
     BuyerInvoicePreference, FormState, InvoiceInputState, KeyInputState, MessageNotification,
     MessageViewState, OperationResult, OrderBookFilterState, OrderBookFilters, OrderBookSort,
@@ -426,6 +427,11 @@ pub struct AppState {
     pub admin_keys: Option<Keys>,
     /// After switching to admin mode (Settings → Switch Mode) or saving admin key: reload disputes from DB in main.
     pub pending_admin_disputes_reload: bool,
+    /// Last `AdminOrderInfo` request number; replies carrying another number
+    /// (cancelled or superseded requests) are dropped.
+    pub admin_order_info_seq: u64,
+    /// Escrow check shown in the Resolve review (keyed by order id).
+    pub finalization_order_check: Option<FinalizationOrderCheck>,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,
     /// Orders-tab local filters, applied after the settings currency filter.
@@ -557,6 +563,8 @@ impl AppState {
             observer_fetch_generation: 0,
             admin_keys: None,
             pending_admin_disputes_reload: false,
+            admin_order_info_seq: 0,
+            finalization_order_check: None,
             currencies_filter: Vec::new(),
             order_filters: OrderBookFilters::default(),
             order_sort: OrderBookSort::default(),

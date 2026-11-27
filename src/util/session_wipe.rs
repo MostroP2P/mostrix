@@ -553,8 +553,12 @@ mod tests {
     }
 
     async fn count_rows(pool: &SqlitePool, table: &str) -> i64 {
+        assert!(
+            crate::db::is_sql_identifier(table),
+            "bad table name {table:?}"
+        );
         let query = format!("SELECT COUNT(*) FROM {table}");
-        let (count,): (i64,) = sqlx::query_as(&query)
+        let (count,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(query))
             .fetch_one(pool)
             .await
             .unwrap_or_else(|e| panic!("count {table}: {e}"));

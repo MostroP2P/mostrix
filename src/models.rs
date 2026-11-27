@@ -1231,7 +1231,7 @@ impl Order {
     pub async fn get_startup_active_orders(
         pool: &SqlitePool,
     ) -> Result<Vec<StartupActiveOrderRecord>> {
-        let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
             "SELECT id, status, trade_index, trade_keys, last_seen_dm_ts FROM orders \
              WHERE trade_keys IS NOT NULL AND trade_keys != '' \
              AND (status IS NULL OR lower(status) NOT IN (",
@@ -1255,7 +1255,7 @@ impl Order {
     /// Rows must have persisted trade keys. Status is compared case-insensitively against
     /// [`TERMINAL_ORDER_HISTORY_STATUSES`] (includes `success`, unlike [`TERMINAL_DM_STATUSES`]).
     pub async fn list_ids_for_targeted_relay_reconcile(pool: &SqlitePool) -> Result<Vec<String>> {
-        let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
             "SELECT id FROM orders WHERE trade_keys IS NOT NULL AND trade_keys != '' \
              AND id IS NOT NULL AND id != '' \
              AND (status IS NULL OR lower(status) NOT IN (",
@@ -1289,7 +1289,7 @@ impl Order {
     /// Deletes one order row when it is in a terminal status.
     /// Returns number of deleted rows (0 when order is non-terminal or missing).
     pub async fn delete_terminal_order_by_id(pool: &SqlitePool, order_id: &str) -> Result<u64> {
-        let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new("DELETE FROM orders WHERE id = ");
+        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("DELETE FROM orders WHERE id = ");
         qb.push_bind(order_id);
         qb.push(" AND lower(COALESCE(status, '')) IN (");
         {
@@ -1306,7 +1306,7 @@ impl Order {
     /// Deletes only success/canceled rows for user bulk cleanup.
     /// Returns number of deleted rows.
     pub async fn delete_bulk_history_cleanup_orders(pool: &SqlitePool) -> Result<u64> {
-        let mut qb: QueryBuilder<'_, Sqlite> =
+        let mut qb: QueryBuilder<Sqlite> =
             QueryBuilder::new("DELETE FROM orders WHERE lower(COALESCE(status, '')) IN (");
         {
             let mut separated = qb.separated(", ");

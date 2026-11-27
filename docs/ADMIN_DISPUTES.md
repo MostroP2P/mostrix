@@ -27,6 +27,7 @@ Lists pending disputes on the Mostro network (state: `Initiated`, filtered via `
 
 - **View dispute details**: Dispute ID, status, and **Created** time — the kind-38386 open-time **tag** from Mostro's SQLite (`disputes.created_at`). Prefer `published_at` (current name; [mostro#1001](https://github.com/MostroP2P/mostro/pull/1001)), then the legacy `created_at` tag ([mostro#878](https://github.com/MostroP2P/mostro/pull/878), v0.18.5–rename), then Nostr `event.created_at` (last publish) when neither tag is usable. The Created column drops on narrow terminals.
 - **Take a dispute**: Select a dispute and press Enter to take ownership
+- **Check the order after taking**: the real order state (**Shift+U**) is not available here — the kind-38386 dispute event carries no order id. Take the dispute first, then use **Shift+U** on **Disputes in Progress** (see [Checking the real order state](#checking-the-real-order-state-shiftu))
 - **Take over from Serbero**: **Ctrl+T** lists `in-progress` disputes Serbero wrote about (see [Taking over a dispute from Serbero](#taking-over-a-dispute-from-serbero-ctrlt))
 - **See Serbero handoffs**: when Serbero handed a dispute to a person, a yellow line above the table says so (see [Serbero handoffs at a glance](#serbero-handoffs-at-a-glance)) and the tab label reads `Disputes Pending 🙋 N` from any tab
 - **Navigate**: ↑↓ browse the list; selection is by dispute UUID (`selected_pending_dispute_id`), resolved through `selected_pending_dispute` / `move_pending_dispute_selection` in `src/ui/helpers/dispute_selection.rs`
@@ -91,9 +92,10 @@ The interface is divided into three main sections:
 - **Tab / Shift+Tab**: Cycle panes BUYER → SELLER → SERBERO (assistant messages, read-only; clears draft; forces COMMAND on SERBERO)
 - **i / Insert**: Enter **INSERT** on BUYER/SELLER only (not SERBERO). **Esc** leaves INSERT → **COMMAND** (draft kept for the same dispute/party)
 - **Enter**: Send message (when INSERT and input has text; ownership must match live target)
-- **Ctrl+K**: Dispute actions popup (Resolve / Recover / Filter / Remove). Pins the selected **dispute id** at open so a list refresh cannot retarget Resolve/Remove. **↑↓ or letter** moves the highlight; **Enter** confirms (letters do not execute). Works in INSERT and COMMAND
+- **Ctrl+K**: Dispute actions popup (Resolve / Recover / Filter / Remove / State). Pins the selected **dispute id** at open so a list refresh cannot retarget Resolve/Remove. **↑↓ or letter** moves the highlight; **Enter** confirms (letters do not execute). Works in INSERT and COMMAND
 - **Shift+F**: Open finalization popup (COMMAND only; also via Ctrl+K → F)
 - **Shift+R**: Recover missing taken disputes (COMMAND only; also via Ctrl+K → R)
+- **Shift+U**: Check the real order state from Mostro, read-only (COMMAND only; also via Ctrl+K → U); see below
 - **Shift+C**: Toggle In Progress / Finalized filter (COMMAND only; also via Ctrl+K → C; clears draft)
 - **Delete**: Remove selected dispute from local DB (COMMAND only; also via Ctrl+K → D)
 - **Ctrl+T**: Take over a dispute Serbero handed off or is mediating (also on Disputes Pending); see below
@@ -407,6 +409,23 @@ On the **Disputes in Progress** tab, press **Shift+R**:
 5. When this admin is already the assigned solver, Mostro returns `AdminTookDispute` + `SolverDisputeInfo` again and the row is saved; `CantDo` (e.g. another solver owns it) is counted as rejected in the summary toast
 
 Relay events alone cannot hydrate In Progress: kind 38386 does not carry `SolverDisputeInfo`.
+
+#### Checking the real order state (Shift+U)
+
+The public order event only says `pending`, `in-progress`, `success` or `canceled`. **Shift+U** (or **Ctrl+K → U**) on **Disputes in Progress** sends `AdminOrderInfo` for the order of the selected dispute and shows Mostro's answer in a read-only popup. Nothing changes on Mostro or locally, so there is no confirmation step, and it works on finalized disputes and in the SERBERO pane too. The admin key and every registered solver (`read` or `read-write`) may ask, about any order of the node; another key gets "neither the admin nor a registered solver", an unknown order "Mostro has no order".
+
+The popup shows, in this order:
+
+1. **Check**: only when something needs attention. ⛔ when the stored status and the Lightning node contradict each other (e.g. status `dispute` with the hold invoice not `accepted`, so settling or canceling would fail; a canceled order whose funds are still locked; an active, fiat-sent or disputed order with no escrow at all, or with a Cashu escrow that is not locked; a payment to the buyer in flight or succeeded while the status says the escrow was never released, or still in flight on a `success`, `settled-by-admin` or `completed-by-admin` order), a failed payment to the buyer (also when the Lightning node is down, since the failure is recorded in Mostro's database) or a failed bond payout; ⚠ when the Lightning node did not answer or has no record of the payout, when the buyer was paid but the status is still `settled-hold-invoice`, or when a status, hold invoice, payout or bond value (state, role, kind, slash reason) is unknown to this build (it cannot be verified, so it is never shown as ✅); ℹ for a slashed bond whose payout is pending. States that may briefly lag behind the status are not flagged.
+2. **Order (database)**: the real stored status (not the reduced public one), who opened the dispute or asked for a cooperative cancel.
+3. **Escrow**: the seller's hold invoice as the Lightning node reports it (`open`, `accepted`, `settled`, `canceled`, `not found`, `unavailable`) and since when it is held, or the Cashu mint and lock time.
+4. **Payout to buyer**, **Bonds** and **Details** (amounts, fees, times, trade pubkeys).
+
+Database and Lightning values are shown side by side and never merged. **↑↓ / PgUp / PgDn** scroll, **Esc / Enter** close. **Esc** while waiting cancels the request; a late answer is then ignored.
+
+**Not on Disputes Pending**: the kind-38386 dispute event carries no order id (only the dispute id, status, initiator and open time), so Mostrix does not know which order a pending dispute belongs to until it is taken (`SolverDisputeInfo`). `AdminOrderInfo` takes an order id, so the check is only available on **Disputes in Progress**. A nil order id is never sent to Mostro.
+
+**In the Resolve review**: opening it (**Shift+F** / **Ctrl+K → F**) sends the same query in the background, and the review shows a one-line **Mostro check** above the buttons, e.g. `✅ Mostro check: status dispute, hold invoice accepted (funds locked)`, or the most serious warning (`⛔ … escrow is not locked, so settling or canceling it will fail`). The same line is repeated in the Yes/No confirmation, right above YES. It never blocks the action: when the Lightning node is unavailable the check says so and the admin decides.
 
 ### Dispute Information Structure
 
@@ -802,9 +821,10 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 - **i / Esc**: INSERT typing / COMMAND shortcuts (aligned with My Trades; not on SERBERO)
 - **Enter**: Send message (when INSERT, ownership matches live dispute/party)
-- **Ctrl+K**: Dispute actions (Resolve / Recover / Filter / Remove); pin dispute id; letter selects, Enter confirms
+- **Ctrl+K**: Dispute actions (Resolve / Recover / Filter / Remove / State); pin dispute id; letter selects, Enter confirms
 - **Shift+F**: Open finalization popup (COMMAND)
 - **Shift+R**: Recover missing taken disputes — orphan picker (↑↓ / Space), then `AdminTakeDispute` for selected IDs only (COMMAND)
+- **Shift+U**: Check the real order state (`AdminOrderInfo`, database + Lightning, read-only) (COMMAND)
 - **Tab**: Cycle Buyer / Seller / SERBERO (clears draft)
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)
@@ -1242,7 +1262,7 @@ Key derivation is a critical security component and is thoroughly tested:
 The test infrastructure is designed for easy expansion. Prefer **`ratatui::backend::TestBackend`** for deterministic TUI render asserts (see [CODING_STANDARDS.md](CODING_STANDARDS.md) and `src/ui/helpers/layout.rs`). Further additions could include:
 
 - Mock-based tests for async operations (Nostr client interactions)
-- Broader UI state-transition coverage (key handler waves in `.cursor/rules/test-coverage.mdc`)
+- Broader UI state-transition coverage (key handler waves in the coverage roadmap of [CODING_STANDARDS.md](CODING_STANDARDS.md#testing-and-quality))
 - Snapshot testing for complex data structures
 - End-to-end workflow tests
 

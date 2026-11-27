@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use super::dispute_bond_slash_popup;
 use super::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 use crate::ui::helpers::{format_local_timestamp, format_user_rating, is_dispute_finalized};
+use crate::ui::order_info_popup::{order_check_for, order_check_paragraph};
 use crate::util::order_utils::BondSlashChoice;
 
 /// Render the dispute finalization popup with full dispute details and action buttons
@@ -147,10 +148,13 @@ pub fn render_finalization_popup(
         height: popup.height.saturating_sub(2),
     };
 
+    let order_check = order_check_for(app, &selected_dispute.id);
     let chunks = Layout::new(
         Direction::Vertical,
         [
-            Constraint::Min(0),    // Content area
+            Constraint::Min(0), // Content area
+            // Mostro check (escrow state); shrinks the details first.
+            Constraint::Length(if order_check.is_some() { 2 } else { 0 }),
             Constraint::Length(3), // Buttons area
         ],
     )
@@ -158,12 +162,15 @@ pub fn render_finalization_popup(
 
     // Content area - scrollable details
     render_dispute_details(f, chunks[0], selected_dispute);
+    if let Some(state) = order_check {
+        f.render_widget(order_check_paragraph(state), chunks[1]);
+    }
 
     // Buttons area - pass dispute status to check if finalized
     let dispute_is_finalized = is_dispute_finalized(selected_dispute).unwrap_or(false);
     render_action_buttons(
         f,
-        chunks[1],
+        chunks[2],
         selected_button,
         bond,
         dispute_is_finalized,

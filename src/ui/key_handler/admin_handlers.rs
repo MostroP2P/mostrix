@@ -8,17 +8,22 @@ use crate::ui::key_handler::confirmation::{
 use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
 use crate::ui::key_handler::EnterKeyContext;
+use crate::ui::order_info_popup::{FinalizationOrderCheck, OrderCheckState};
 use crate::ui::orders::OperationResult;
 use crate::ui::takeover_picker::{solver_takeover_candidates, TakeoverCandidate};
 use crate::ui::{AddSolverState, AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
 use crate::util::fatal::request_fatal_restart;
+use crate::util::mostro_info::MostroInstanceInfo;
 use crate::util::order_utils::{
-    execute_admin_add_solver, execute_finalize_dispute, execute_take_dispute,
-    orphan_in_progress_dispute_ids, take_error_message, AdminFinalizeAck, BondSlashChoice,
+    execute_admin_add_solver, execute_admin_order_info, execute_finalize_dispute,
+    execute_take_dispute, orphan_in_progress_dispute_ids, take_error_message, AdminFinalizeAck,
+    BondSlashChoice,
 };
 use mostro_core::prelude::Dispute;
+use nostr_sdk::prelude::{Client, Keys, PublicKey};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 /// Helper function to execute taking a dispute.
@@ -369,6 +374,149 @@ pub(crate) fn execute_recover_taken_disputes_action(
         };
         let _ = result_tx.send(result);
     });
+}
+
+/// What [`request_admin_order_info`] needs from the key handler.
+pub(crate) struct OrderInfoDeps<'a> {
+    pub admin_keys: Option<&'a Keys>,
+    pub client: &'a Client,
+    pub current_mostro_pubkey: &'a Arc<Mutex<PublicKey>>,
+    pub order_result_tx: &'a UnboundedSender<OperationResult>,
+}
+
+/// Shift+U / Ctrl+K → U on Disputes in Progress: ask Mostro for the real state
+/// of the order behind `dispute` (the sidebar row, or the one pinned when the
+/// Ctrl+K menu opened). Read-only, so no confirmation step.
+pub(crate) fn begin_dispute_order_info(
+    app: &mut AppState,
+    dispute: Option<AdminDispute>,
+    deps: &OrderInfoDeps<'_>,
+) {
+    let Some(dispute) = dispute else {
+        app.mode = UiMode::operation_result(OperationResult::Info(
+            "Select a dispute in the sidebar to check its order state.".to_string(),
+        ));
+        return;
+    };
+    let Ok(order_id) = Uuid::parse_str(&dispute.id) else {
+        app.mode = UiMode::operation_result(OperationResult::Error(format!(
+            "Dispute {} has no valid order id.",
+            dispute.dispute_id
+        )));
+        return;
+    };
+    request_admin_order_info(app, order_id, deps);
+}
+
+/// Ask Mostro for the real state of `order_id` (`AdminOrderInfo`, read-only).
+///
+/// Switches to [`AdminMode::WaitingOrderInfo`], remembering the current mode so
+/// the snapshot view (or Esc while waiting) returns to it.
+pub(crate) fn request_admin_order_info(
+    app: &mut AppState,
+    order_id: Uuid,
+    deps: &OrderInfoDeps<'_>,
+) {
+    match spawn_admin_order_info(app, order_id, deps) {
+        Ok(seq) => {
+            let return_to = Box::new(std::mem::replace(&mut app.mode, UiMode::Normal));
+            app.mode = UiMode::AdminMode(AdminMode::WaitingOrderInfo {
+                order_id,
+                seq,
+                return_to,
+            });
+        }
+        Err(message) => {
+            app.mode = UiMode::operation_result(OperationResult::Error(message));
+        }
+    }
+}
+
+/// Open the Resolve review for `dispute_id` and check the escrow of its order
+/// in the background; the review shows the result as it arrives.
+pub(crate) fn open_finalization_review(
+    app: &mut AppState,
+    dispute_id: Uuid,
+    deps: &OrderInfoDeps<'_>,
+) {
+    app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+        dispute_id,
+        selected_button_index: 0,
+        bond: BondSlashChoice::None,
+        slash_submenu_open: false,
+        slash_submenu_index: 0,
+    });
+    let order_id = app
+        .admin_disputes_in_progress
+        .iter()
+        .find(|d| d.dispute_id == dispute_id.to_string())
+        .and_then(|d| Uuid::parse_str(&d.id).ok());
+    let Some(order_id) = order_id else {
+        app.finalization_order_check = None;
+        return;
+    };
+    let (seq, state) = match spawn_admin_order_info(app, order_id, deps) {
+        Ok(seq) => (seq, OrderCheckState::Loading),
+        Err(message) => (0, OrderCheckState::Failed(message)),
+    };
+    app.finalization_order_check = Some(FinalizationOrderCheck {
+        order_id,
+        seq,
+        state,
+    });
+}
+
+/// Start an `AdminOrderInfo` request without changing the UI mode. The reply
+/// arrives as [`OperationResult::AdminOrderInfo`] with the returned number.
+fn spawn_admin_order_info(
+    app: &mut AppState,
+    order_id: Uuid,
+    deps: &OrderInfoDeps<'_>,
+) -> Result<u64, String> {
+    // A nil id is a placeholder (e.g. a relay dispute event, which carries no
+    // order id), never a real order: do not ask Mostro about it.
+    if order_id.is_nil() {
+        return Err("The order of this dispute is not known yet.".to_string());
+    }
+    let Some(admin_keys) = deps.admin_keys.cloned() else {
+        return Err("Admin private key not configured".to_string());
+    };
+    let Ok(mostro_pubkey) = deps.current_mostro_pubkey.lock().map(|pk| *pk) else {
+        let message =
+            "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
+                .to_string();
+        request_fatal_restart(message.clone());
+        return Err(message);
+    };
+    // Cached kind-38385 info carries the PoW the instance requires.
+    let mostro_info: Option<MostroInstanceInfo> = app.mostro_info.clone();
+
+    app.admin_order_info_seq = app.admin_order_info_seq.wrapping_add(1);
+    let seq = app.admin_order_info_seq;
+
+    let client = deps.client.clone();
+    let result_tx = deps.order_result_tx.clone();
+    tokio::spawn(async move {
+        let result = execute_admin_order_info(
+            &order_id,
+            &admin_keys,
+            &client,
+            mostro_pubkey,
+            mostro_info.as_ref(),
+        )
+        .await
+        .map(Box::new)
+        .map_err(|e| {
+            log::error!("Admin order info failed for {order_id}: {e}");
+            e.to_string()
+        });
+        let _ = result_tx.send(OperationResult::AdminOrderInfo {
+            seq,
+            order_id,
+            result,
+        });
+    });
+    Ok(seq)
 }
 
 /// Helper function to execute adding a solver.

@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{helpers, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::order_info_popup::{order_check_for, order_check_paragraph};
 use crate::util::order_utils::BondSlashChoice;
 
 /// Render the dispute finalization confirmation popup
@@ -65,9 +66,11 @@ pub fn render_finalization_confirm(
         return;
     };
 
+    let order_check = order_check_for(app, &selected_dispute.id);
     let area = f.area();
     let popup_width = 70.min(area.width.saturating_sub(4));
-    let popup_height = 17.min(area.height.saturating_sub(2));
+    let popup_height =
+        (if order_check.is_some() { 19 } else { 17 }).min(area.height.saturating_sub(2));
     let popup = helpers::create_centered_popup(area, popup_width, popup_height);
     f.render_widget(Clear, popup);
 
@@ -103,6 +106,12 @@ pub fn render_finalization_confirm(
     if bond_ui_enabled {
         constraints.push(Constraint::Length(1)); // bond slash recap
     }
+    // Mostro check right above YES/NO, so a contradiction is read before confirming.
+    constraints.push(Constraint::Length(if order_check.is_some() {
+        2
+    } else {
+        0
+    }));
     constraints.extend([
         Constraint::Length(1), // spacer
         Constraint::Length(3), // buttons
@@ -112,9 +121,17 @@ pub fn render_finalization_confirm(
     let chunks = Layout::new(Direction::Vertical, constraints).split(inner_area);
 
     let bond_chunk = if bond_ui_enabled { 4 } else { usize::MAX };
-    let buttons_chunk = if bond_ui_enabled { 6 } else { 5 };
+    let check_chunk = if bond_ui_enabled { 5 } else { 4 };
+    let buttons_chunk = check_chunk + 2;
     let help_chunk = buttons_chunk + 1;
     let esc_help_chunk = help_chunk + 1;
+
+    if let Some(state) = order_check {
+        f.render_widget(
+            order_check_paragraph(state).alignment(ratatui::layout::Alignment::Center),
+            chunks[check_chunk],
+        );
+    }
 
     // Dispute ID
     f.render_widget(

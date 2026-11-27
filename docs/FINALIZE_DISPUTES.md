@@ -14,6 +14,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 | **Execute layer** (`execute_admin_settle` / `cancel`) | Done | `request_id` + `wait_for_dm` + `handle_mostro_response`; expects `AdminSettled` / `AdminCanceled`, or `CooperativeCancelAccepted` when users already canceled; `CantDo` before DB update |
 | **Success / error popup** | Done | `BondSlashChoice::finalize_success_message`; word-wrapped `OperationResult::Info` in `operation_result.rs` |
 | **TUI** (slash picker + confirm summary) | Done | Inline bond button + overlay; confirm shows `bond.label()` recap |
+| **Mostro check** (`mostro-core` 0.17.4, `AdminOrderInfo`) | Done | Background escrow check when the review opens, shown above the buttons and above YES; never blocks; unknown states are ⚠, never ✅ — see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#checking-the-real-order-state-shiftu) |
 | **`bond_enabled` gating** (kind 38385) | Done | Parse tag in [`mostro_info.rs`](../src/util/mostro_info.rs); hide Bond button when not `"true"` |
 | **Trader `AddBondInvoice`** | Done | Payout popup + `execute_add_bond_invoice`; `wait_for_dm` + follow-up via `OpenInvoicePopup` / `PaymentRequestRequired` ([MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)) |
 
@@ -33,10 +34,10 @@ Protocol references: [Admin Settle](https://mostro.network/protocol/admin_settle
    - Press End to jump to bottom of chat (latest messages)
    - Visual scrollbar on the right shows position in chat history
 5. **Open Finalization**: Press Shift+F (COMMAND) or Ctrl+K → F to open finalization popup
-6. **Review Full Details**: Popup shows complete dispute information
+6. **Review Full Details**: Popup shows complete dispute information, plus a **Mostro check** line: Mostrix asks Mostro (`AdminOrderInfo`, read-only) for the real order state as the popup opens and shows the escrow state or the most serious disagreement between the stored status and the Lightning node (see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#checking-the-real-order-state-shiftu))
 7. **Choose actions on one popup** (Left/Right): **💰 Pay buyer** (`AdminSettle`), **↩️ Refund seller** (`AdminCancel`), and **Bond** when the instance advertises `bond_enabled: true` on kind **38385** (otherwise a two-button layout only). Button **titles** use the outcome labels; the **body** shows protocol names **`Admin settle`** / **`Admin cancel`** (and `bond.label()` on Bond). **Esc** closes the popup (no separate Exit button).
 8. **Bond slash submenu** (optional): With **Bond** focused, **Enter** opens overlay **⚔️ Bond resolution**; ↑/↓ among four labeled choices; **Enter** applies; **Esc** closes submenu only.
-9. **Confirm**: **Enter** on pay/refund opens Yes/No — title e.g. `⚠️ Confirm 💰 Pay buyer`, description + **Bond:** recap (`bond.label()`).
+9. **Confirm**: **Enter** on pay/refund opens Yes/No — title e.g. `⚠️ Confirm 💰 Pay buyer`, description + **Bond:** recap (`bond.label()`) + the **Mostro check** line right above YES.
 10. **Execute**: **Enter** on Yes — UI enters `AdminMode::WaitingDisputeFinalization`, sends encrypted DM to Mostro, waits for reply.
 11. **Result**: Success → multi-line **Operation Successful** popup; failure (timeout, `CantDo`, wrong action) → **Operation Failed** with daemon text. **Esc** / **Enter** closes; disputes list refreshes on success (`"Dispute finalized"` marker in `main.rs`).
 
@@ -359,7 +360,7 @@ Enter Send · Esc Commands · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy
 6. **Check privacy**: Privacy labels ("Yes" = private mode / "No" = public mode) indicate whether user info may be limited
 7. **Switch parties**: Use Tab to alternate between buyer and seller chats
 8. **Scroll history**: Use PageUp/PageDown to review full conversation history, or End to jump to latest
-9. **Use COMMAND for shortcuts**: Press Esc to leave INSERT before Shift+F / Shift+R / Delete (or use Ctrl+K Actions)
+9. **Use COMMAND for shortcuts**: Press Esc to leave INSERT before Shift+F / Shift+R / Shift+U / Delete (or use Ctrl+K Actions)
 10. **Monitor scrollbar**: Visual scrollbar on the right shows your position in the chat history
 
 ## Related Files

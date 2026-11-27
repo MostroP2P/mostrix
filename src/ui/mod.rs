@@ -31,6 +31,7 @@ pub mod offline_overlay;
 pub mod operation_result;
 pub mod order_confirm;
 pub mod order_form;
+pub mod order_info_popup;
 pub mod order_take;
 pub(crate) mod orders;
 pub mod payment_methods;

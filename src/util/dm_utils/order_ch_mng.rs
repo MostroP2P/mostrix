@@ -1,17 +1,18 @@
 // Order channel manager - handles order result messages from async tasks
 use crate::ui::helpers::build_active_order_chat_list;
+use crate::ui::order_info_popup::OrderCheckState;
 use crate::ui::orders::{
     merge_order_snapshots, strip_new_order_messages_and_clamp_selected,
     try_placeholder_order_message_from_payment_request, try_placeholder_order_message_from_success,
     BuyerInvoicePreference, OrderSuccess,
 };
 use crate::ui::{
-    AppState, ChatParty, InvoiceInputState, MessageNotification, OperationResult,
+    AdminMode, AppState, ChatParty, InvoiceInputState, MessageNotification, OperationResult,
     OrderChatStaticHeader, UiMode, UserMode,
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
 use crate::util::order_utils::should_apply_status_transition;
-use mostro_core::prelude::{Action, Message, Payload, SmallOrder, UserInfo};
+use mostro_core::prelude::{Action, Message, OrderInfo, Payload, SmallOrder, UserInfo};
 use nostr_sdk::prelude::PublicKey;
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -284,8 +285,56 @@ fn maybe_insert_payment_request_placeholder(
     }
 }
 
+/// Apply an `AdminOrderInfo` reply. Only the request the UI still waits for
+/// (same `seq` and order) is shown; a reply to a cancelled or superseded
+/// request is dropped without touching the current screen.
+fn apply_admin_order_info_result(
+    app: &mut AppState,
+    seq: u64,
+    order_id: Uuid,
+    result: Result<Box<OrderInfo>, String>,
+) {
+    if let Some(check) = app.finalization_order_check.as_mut() {
+        if check.seq == seq && check.order_id == order_id {
+            check.state = match result {
+                Ok(info) => OrderCheckState::Ready(info),
+                Err(message) => OrderCheckState::Failed(message),
+            };
+            return;
+        }
+    }
+    let return_to = match &app.mode {
+        UiMode::AdminMode(AdminMode::WaitingOrderInfo {
+            order_id: waiting_id,
+            seq: waiting_seq,
+            return_to,
+        }) if *waiting_seq == seq && *waiting_id == order_id => return_to.clone(),
+        _ => {
+            log::debug!("Dropping stale admin order info reply for {order_id} (seq {seq})");
+            return;
+        }
+    };
+    app.mode = match result {
+        Ok(info) => UiMode::AdminMode(AdminMode::OrderInfoView {
+            info,
+            scroll: 0,
+            return_to,
+        }),
+        Err(message) => UiMode::operation_result(OperationResult::Error(message)),
+    };
+}
+
 /// Handle order result from the order result channel
 pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) {
+    if let OperationResult::AdminOrderInfo {
+        seq,
+        order_id,
+        result,
+    } = result
+    {
+        apply_admin_order_info_result(app, seq, order_id, result);
+        return;
+    }
     if let OperationResult::TradeIndexOutOfSync { retry } = result {
         app.mode = UiMode::ConfirmTradeIndexSync(retry, true);
         return;
@@ -638,11 +687,144 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::key_handler::handle_esc_key;
+    use crate::ui::order_info_popup::FinalizationOrderCheck;
     use crate::ui::orders::{
         order_message_to_notification, OrderChatStaticHeader, OrderMessage, TakeOrderState,
     };
     use crate::ui::{FormState, UserRole};
+    use crate::util::order_utils::BondSlashChoice;
 
+    fn waiting_order_info(app: &mut AppState, order_id: Uuid, seq: u64) {
+        app.admin_order_info_seq = seq;
+        app.mode = UiMode::AdminMode(AdminMode::WaitingOrderInfo {
+            order_id,
+            seq,
+            return_to: Box::new(UiMode::AdminMode(AdminMode::ManagingDispute)),
+        });
+    }
+
+    fn order_info_reply(seq: u64, order_id: Uuid, result: Result<(), &str>) -> OperationResult {
+        OperationResult::AdminOrderInfo {
+            seq,
+            order_id,
+            result: result
+                .map(|()| {
+                    Box::new(OrderInfo {
+                        id: order_id,
+                        status: "dispute".into(),
+                        ..Default::default()
+                    })
+                })
+                .map_err(str::to_string),
+        }
+    }
+
+    #[test]
+    fn review_check_reply_is_stored_without_leaving_the_review() {
+        let mut app = AppState::new(UserRole::Admin);
+        let order_id = Uuid::from_u128(9);
+        let review = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+            dispute_id: Uuid::from_u128(10),
+            selected_button_index: 1,
+            bond: BondSlashChoice::None,
+            slash_submenu_open: false,
+            slash_submenu_index: 0,
+        });
+        app.mode = review.clone();
+        app.finalization_order_check = Some(FinalizationOrderCheck {
+            order_id,
+            seq: 5,
+            state: OrderCheckState::Loading,
+        });
+
+        // An older request's reply is ignored.
+        handle_operation_result(order_info_reply(4, order_id, Err("old")), &mut app);
+        assert!(matches!(
+            app.finalization_order_check.as_ref().unwrap().state,
+            OrderCheckState::Loading
+        ));
+
+        handle_operation_result(order_info_reply(5, order_id, Ok(())), &mut app);
+        assert!(matches!(
+            app.finalization_order_check.as_ref().unwrap().state,
+            OrderCheckState::Ready(_)
+        ));
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                selected_button_index: 1,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn awaited_order_info_reply_opens_the_snapshot_and_returns_on_close() {
+        let mut app = AppState::new(UserRole::Admin);
+        let order_id = Uuid::from_u128(7);
+        waiting_order_info(&mut app, order_id, 3);
+
+        handle_operation_result(order_info_reply(3, order_id, Ok(())), &mut app);
+
+        match &app.mode {
+            UiMode::AdminMode(AdminMode::OrderInfoView { info, scroll, .. }) => {
+                assert_eq!(info.id, order_id);
+                assert_eq!(*scroll, 0);
+            }
+            other => panic!("expected snapshot view, got {other:?}"),
+        }
+        handle_esc_key(&mut app);
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
+    }
+
+    #[test]
+    fn failed_order_info_while_waiting_shows_the_error() {
+        let mut app = AppState::new(UserRole::Admin);
+        let order_id = Uuid::from_u128(7);
+        waiting_order_info(&mut app, order_id, 1);
+
+        handle_operation_result(
+            order_info_reply(1, order_id, Err("Mostro has no order")),
+            &mut app,
+        );
+
+        match &app.mode {
+            UiMode::OperationResult(r) => assert!(
+                matches!(r.as_ref(), OperationResult::Error(m) if m == "Mostro has no order")
+            ),
+            other => panic!("expected error popup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn order_info_reply_after_esc_or_for_an_older_request_is_dropped() {
+        let mut app = AppState::new(UserRole::Admin);
+        let order_id = Uuid::from_u128(7);
+
+        // Superseded request: the UI waits for seq 2, the reply is for seq 1.
+        waiting_order_info(&mut app, order_id, 2);
+        handle_operation_result(order_info_reply(1, order_id, Err("late")), &mut app);
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::WaitingOrderInfo { seq: 2, .. })
+        ));
+
+        // Cancelled with Esc: the reply must not pop up over the dispute screen.
+        handle_esc_key(&mut app);
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
+        handle_operation_result(order_info_reply(2, order_id, Ok(())), &mut app);
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
+    }
     #[test]
     fn a_takeover_opens_the_dispute_in_progress_and_confirms() {
         use crate::ui::{AdminTab, Tab};

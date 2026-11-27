@@ -106,7 +106,7 @@ pub(crate) fn should_reopen_replacement_invoice(app: &AppState, msg: &OrderMessa
 }
 
 fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
-    Mnemonic::generate(12)
+    Mnemonic::generate(bip39::WordCount::Words12)
         .map(|m| m.to_string())
         .map_err(|e| e.to_string())
 }
@@ -939,6 +939,15 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
         }
         UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) => {
             app.mode = UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute);
+            true
+        }
+        UiMode::AdminMode(mode @ AdminMode::WaitingOrderInfo { .. }) => {
+            // Stay on the waiting overlay until the reply (or Esc).
+            app.mode = UiMode::AdminMode(mode);
+            true
+        }
+        UiMode::AdminMode(AdminMode::OrderInfoView { return_to, .. }) => {
+            app.mode = *return_to;
             true
         }
         UiMode::AdminMode(AdminMode::WaitingAddSolver) => {

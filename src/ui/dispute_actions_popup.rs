@@ -13,6 +13,7 @@ pub const DISPUTE_ACTION_ROWS: &[&str] = &[
     "R  Recover taken disputes",
     "C  Toggle Finalized / In Progress",
     "D  Remove from local DB",
+    "U  Check order state (Mostro + LN)",
 ];
 
 #[must_use]
@@ -28,6 +29,7 @@ pub fn dispute_action_index_for_key(c: char) -> Option<usize> {
         'r' => Some(1),
         'c' => Some(2),
         'd' => Some(3),
+        'u' => Some(4),
         _ => None,
     }
 }
@@ -130,6 +132,8 @@ mod tests {
     fn letter_shortcuts_map_to_rows() {
         assert_eq!(dispute_action_index_for_key('F'), Some(0));
         assert_eq!(dispute_action_index_for_key('d'), Some(3));
+        assert_eq!(dispute_action_index_for_key('U'), Some(4));
+        assert_eq!(DISPUTE_ACTION_ROWS[4], "U  Check order state (Mostro + LN)");
         assert_eq!(dispute_action_index_for_key('x'), None);
     }
 

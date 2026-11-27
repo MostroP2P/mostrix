@@ -26,6 +26,5 @@ TUI render logic can be verified deterministically in unit tests with
 `ratatui::backend::TestBackend` (render a widget to a fixed-size buffer and
 assert on the output) — no live relay/Lightning needed. Prefer the shared helpers
 in `src/ui/helpers/layout.rs` as the popup TestBackend template (`buffer_contains`,
-selection bg checks). When raising coverage on 0% files, follow the waves in
-`.cursor/rules/test-coverage.mdc` and the Testing section of
-`docs/CODING_STANDARDS.md`.
+selection bg checks). When raising coverage on 0% files, follow the coverage
+roadmap in the Testing section of `docs/CODING_STANDARDS.md`.
