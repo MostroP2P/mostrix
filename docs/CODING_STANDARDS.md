@@ -238,7 +238,7 @@ Render/popup logic should be covered with **deterministic** `ratatui::backend::T
 - **Template**: [`src/ui/helpers/layout.rs`](../src/ui/helpers/layout.rs) (`buffer_contains`, optional `cell_with_bg` for selection highlights). Also used by Messages tab layout tests in [`message_flow_tab.rs`](../src/ui/tabs/message_flow_tab.rs).
 - **Placement**: keep unit tests **inline** as `#[cfg(test)] mod tests` (or named modules like `layout_and_render_tests`) in the same `.rs` file. For source files **≥ ~500 LOC** where the test block would dominate, split to a sibling via `#[cfg(test)] #[path = "foo_tests.rs"] mod foo_tests;`.
 - **Assertions**: flatten the buffer and assert substrings (titles, labels, help keys). Avoid asserting time-based spinner/blink glyphs.
-- **Coverage roadmap**: knock out 0% files in small waves (shared layout helpers → thin popups → chat helpers → tabs → util → large handlers). Live report: [mostro.network/mostrix/coverage](https://mostro.network/mostrix/coverage/). Agent priority list: [`.cursor/rules/test-coverage.mdc`](../.cursor/rules/test-coverage.mdc).
+- **Coverage roadmap**: knock out 0% files in small waves (shared layout helpers → thin popups → chat helpers → tabs → util → large handlers). Live report: [mostro.network/mostrix/coverage](https://mostro.network/mostrix/coverage/).
 
 ## Naming Conventions
 

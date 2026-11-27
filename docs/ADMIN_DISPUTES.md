@@ -1262,7 +1262,7 @@ Key derivation is a critical security component and is thoroughly tested:
 The test infrastructure is designed for easy expansion. Prefer **`ratatui::backend::TestBackend`** for deterministic TUI render asserts (see [CODING_STANDARDS.md](CODING_STANDARDS.md) and `src/ui/helpers/layout.rs`). Further additions could include:
 
 - Mock-based tests for async operations (Nostr client interactions)
-- Broader UI state-transition coverage (key handler waves in `.cursor/rules/test-coverage.mdc`)
+- Broader UI state-transition coverage (key handler waves in the coverage roadmap of [CODING_STANDARDS.md](CODING_STANDARDS.md#testing-and-quality))
 - Snapshot testing for complex data structures
 - End-to-end workflow tests
 
