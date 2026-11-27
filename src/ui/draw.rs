@@ -252,6 +252,15 @@ pub fn ui_draw(
     if let UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute) = &app.mode {
         waiting::render_waiting_with_message(f, "Deleting dispute from local database...");
     }
+    if let UiMode::AdminMode(AdminMode::WaitingOrderInfo { order_id, .. }) = &app.mode {
+        waiting::render_waiting_with_message(
+            f,
+            &format!("Asking Mostro for the state of order {order_id}...\nEsc to cancel"),
+        );
+    }
+    if let UiMode::AdminMode(AdminMode::OrderInfoView { info, scroll, .. }) = &mut app.mode {
+        order_info_popup::render_order_info_popup(f, info, scroll);
+    }
     // Waiting for add solver popup overlay (admin mode only)
     if let UiMode::AdminMode(AdminMode::WaitingAddSolver) = &app.mode {
         waiting::render_waiting_with_message(f, "Adding solver and waiting for confirmation...");

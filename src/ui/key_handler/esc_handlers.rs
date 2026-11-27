@@ -282,6 +282,13 @@ pub fn handle_esc_key(app: &mut AppState) -> bool {
             // Can't cancel while waiting for Mostro / local DB
             true
         }
+        // Read-only query: cancelling just stops waiting; the late reply is
+        // dropped because the mode no longer carries its `seq`.
+        UiMode::AdminMode(AdminMode::WaitingOrderInfo { return_to, .. })
+        | UiMode::AdminMode(AdminMode::OrderInfoView { return_to, .. }) => {
+            app.mode = (**return_to).clone();
+            true
+        }
         UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
             slash_submenu_open,
             dispute_id,

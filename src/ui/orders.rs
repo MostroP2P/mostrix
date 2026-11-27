@@ -590,6 +590,13 @@ pub enum OperationResult {
         status: mostro_core::prelude::DisputeStatus,
         message: String,
     },
+    /// Reply to an `AdminOrderInfo` request: the snapshot, or a readable error.
+    /// Applied only while the UI still waits for request `seq`.
+    AdminOrderInfo {
+        seq: u64,
+        order_id: uuid::Uuid,
+        result: Result<Box<mostro_core::prelude::OrderInfo>, String>,
+    },
     /// Local-only admin dispute removal; drop from In Progress list / chat maps.
     AdminDisputeDeleted {
         dispute_id: String,

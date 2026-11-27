@@ -666,6 +666,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DIP_CTRL_K_ACTIONS.to_string(),
                 HELP_DIP_SHIFT_F_RESOLVE.to_string(),
                 HELP_DIP_SHIFT_R_RECOVER.to_string(),
+                HELP_DIP_SHIFT_U_ORDER_STATE.to_string(),
                 HELP_CTRL_T_TAKEOVER.to_string(),
                 // Secondary hint: after the action shortcuts so the compact
                 // fitter on short terminals never drops Ctrl+K in its favour.

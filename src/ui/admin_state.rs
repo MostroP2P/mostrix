@@ -77,4 +77,18 @@ pub enum AdminMode {
         selected_button: bool,
     },
     WaitingDisputeFinalization(uuid::Uuid), // (dispute_id)
+    /// Waiting for Mostro's `AdminOrderInfo` reply. Read-only, so Esc cancels
+    /// (returns to `return_to`); a late reply is dropped by `seq`.
+    WaitingOrderInfo {
+        order_id: uuid::Uuid,
+        seq: u64,
+        return_to: Box<crate::ui::UiMode>,
+    },
+    /// Read-only snapshot of one order (database and Lightning side by side).
+    OrderInfoView {
+        info: Box<mostro_core::prelude::OrderInfo>,
+        /// First visible line of the snapshot.
+        scroll: u16,
+        return_to: Box<crate::ui::UiMode>,
+    },
 }

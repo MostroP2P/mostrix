@@ -426,6 +426,9 @@ pub struct AppState {
     pub admin_keys: Option<Keys>,
     /// After switching to admin mode (Settings → Switch Mode) or saving admin key: reload disputes from DB in main.
     pub pending_admin_disputes_reload: bool,
+    /// Last `AdminOrderInfo` request number; replies carrying another number
+    /// (cancelled or superseded requests) are dropped.
+    pub admin_order_info_seq: u64,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,
     /// Orders-tab local filters, applied after the settings currency filter.
@@ -557,6 +560,7 @@ impl AppState {
             observer_fetch_generation: 0,
             admin_keys: None,
             pending_admin_disputes_reload: false,
+            admin_order_info_seq: 0,
             currencies_filter: Vec::new(),
             order_filters: OrderBookFilters::default(),
             order_sort: OrderBookSort::default(),

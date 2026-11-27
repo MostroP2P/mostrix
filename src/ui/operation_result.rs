@@ -302,6 +302,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
         | OperationResult::AdminDisputeDeleted { .. }
         | OperationResult::DisputeTaken { .. }
         | OperationResult::DisputeClosedByUsers { .. }
+        | OperationResult::AdminOrderInfo { .. }
         | OperationResult::MyTradesMakerBookChanged
         | OperationResult::OwnReputationUpdated { .. }
         | OperationResult::OwnReputationRefreshRequested { .. }
@@ -499,6 +500,7 @@ pub fn render_operation_result(f: &mut ratatui::Frame, result: &OperationResult)
             f.render_widget(paragraph, inner);
         }
         OperationResult::MyTradesMakerBookChanged
+        | OperationResult::AdminOrderInfo { .. }
         | OperationResult::OwnReputationUpdated { .. }
         | OperationResult::OwnReputationRefreshRequested { .. }
         | OperationResult::PostRestoreHydrateCompleted { .. }

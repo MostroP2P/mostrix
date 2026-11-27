@@ -1024,6 +1024,7 @@ fn apply_dispute_action_selection(
     selected_index: usize,
     pinned_dispute_id: Option<String>,
     disputes: &Arc<Mutex<Vec<Dispute>>>,
+    order_info_deps: &admin_handlers::OrderInfoDeps<'_>,
 ) {
     // Restore interactive mode so follow-up handlers see Managing/Normal again.
     let previous = match &app.mode {
@@ -1099,6 +1100,15 @@ fn apply_dispute_action_selection(
                 dispute_id: id_str,
                 selected_button: true,
             });
+        }
+        4 => {
+            let dispute = pinned_dispute_id.and_then(|id| {
+                app.admin_disputes_in_progress
+                    .iter()
+                    .find(|d| d.dispute_id == id)
+                    .cloned()
+            });
+            admin_handlers::begin_dispute_order_info(app, dispute, order_info_deps);
         }
         _ => {}
     }
@@ -1685,7 +1695,13 @@ pub fn handle_key_event(
                 return Some(true);
             }
             KeyCode::Enter => {
-                apply_dispute_action_selection(app, selected_index, dispute_id, disputes);
+                let deps = admin_handlers::OrderInfoDeps {
+                    admin_keys: admin_chat_keys,
+                    client,
+                    current_mostro_pubkey,
+                    order_result_tx,
+                };
+                apply_dispute_action_selection(app, selected_index, dispute_id, disputes, &deps);
                 return Some(true);
             }
             KeyCode::Char(c)
@@ -2404,6 +2420,18 @@ pub fn handle_key_event(
                 admin_handlers::begin_recover_taken_disputes(app, disputes);
                 return Some(true);
             }
+            // Read-only: works on finalized disputes and in the Serbero pane too.
+            if matches!(code, KeyCode::Char('u') | KeyCode::Char('U')) {
+                let dispute = selected_filtered_dispute(app);
+                let deps = admin_handlers::OrderInfoDeps {
+                    admin_keys: admin_chat_keys,
+                    client,
+                    current_mostro_pubkey,
+                    order_result_tx,
+                };
+                admin_handlers::begin_dispute_order_info(app, dispute, &deps);
+                return Some(true);
+            }
         }
 
         // Space: toggle checkbox in Shift+R orphan picker
@@ -2773,6 +2801,10 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::Up | KeyCode::Down => {
+            if let UiMode::AdminMode(AdminMode::OrderInfoView { ref mut scroll, .. }) = app.mode {
+                crate::ui::order_info_popup::scroll_order_info(scroll, code);
+                return Some(true);
+            }
             if let UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
                 slash_submenu_open: true,
                 ref mut slash_submenu_index,
@@ -2827,6 +2859,10 @@ pub fn handle_key_event(
             Some(true)
         }
         KeyCode::PageUp | KeyCode::PageDown => {
+            if let UiMode::AdminMode(AdminMode::OrderInfoView { ref mut scroll, .. }) = app.mode {
+                crate::ui::order_info_popup::scroll_order_info(scroll, code);
+                return Some(true);
+            }
             // Handle chat scrolling in ManagingDispute mode using ListState
             if matches!(app.mode, UiMode::AdminMode(AdminMode::ManagingDispute)) {
                 if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
@@ -4211,6 +4247,14 @@ mod key_handler_tests {
     }
 
     async fn dispatch_observer_test_key(app: &mut AppState, key_event: KeyEvent) {
+        dispatch_test_key_with_admin_keys(app, key_event, None).await;
+    }
+
+    async fn dispatch_test_key_with_admin_keys(
+        app: &mut AppState,
+        key_event: KeyEvent,
+        admin_keys: Option<&Keys>,
+    ) {
         let orders = Arc::new(Mutex::new(Vec::new()));
         let disputes = Arc::new(Mutex::new(Vec::new()));
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -4238,13 +4282,156 @@ mod key_handler_tests {
                 &seed_tx,
                 &info_tx,
                 &|_| {},
-                None,
+                admin_keys,
                 None,
                 None,
                 &dm_tx,
             ),
             Some(true)
         );
+    }
+
+    fn app_with_selected_dispute(order_id: uuid::Uuid) -> AppState {
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
+        app.dispute_filter = crate::ui::DisputeFilter::InProgress;
+        app.admin_disputes_in_progress = vec![crate::models::AdminDispute {
+            id: order_id.to_string(),
+            dispute_id: "d-state".into(),
+            status: Some("in-progress".into()),
+            ..Default::default()
+        }];
+        app.selected_dispute_id = Some("d-state".into());
+        // COMMAND layer (Esc from INSERT), where Shift chords are shortcuts.
+        app.admin_chat_input_enabled = false;
+        app
+    }
+
+    fn assert_waiting_for_order(app: &AppState, order_id: uuid::Uuid) {
+        match &app.mode {
+            UiMode::AdminMode(AdminMode::WaitingOrderInfo {
+                order_id: waiting,
+                seq,
+                return_to,
+            }) => {
+                assert_eq!(
+                    *waiting, order_id,
+                    "asks about the dispute's order, not the dispute"
+                );
+                assert_eq!(*seq, app.admin_order_info_seq);
+                assert!(matches!(
+                    return_to.as_ref(),
+                    UiMode::AdminMode(AdminMode::ManagingDispute)
+                ));
+            }
+            other => panic!("expected WaitingOrderInfo, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn shift_u_asks_mostro_for_the_selected_dispute_order() {
+        let order_id = uuid::Uuid::from_u128(42);
+        let mut app = app_with_selected_dispute(order_id);
+        let keys = Keys::generate();
+        dispatch_test_key_with_admin_keys(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT),
+            Some(&keys),
+        )
+        .await;
+        assert_waiting_for_order(&app, order_id);
+    }
+
+    #[tokio::test]
+    async fn shift_u_types_a_capital_in_insert_and_needs_a_selection() {
+        let order_id = uuid::Uuid::from_u128(42);
+        let keys = Keys::generate();
+
+        let mut app = app_with_selected_dispute(order_id);
+        app.admin_chat_input_enabled = true;
+        dispatch_test_key_with_admin_keys(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT),
+            Some(&keys),
+        )
+        .await;
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
+        assert_eq!(app.admin_chat_input, "U", "INSERT types the capital");
+        assert_eq!(app.admin_order_info_seq, 0, "no request from INSERT");
+
+        let mut app = app_with_selected_dispute(order_id);
+        app.admin_disputes_in_progress.clear();
+        app.selected_dispute_id = None;
+        dispatch_test_key_with_admin_keys(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT),
+            Some(&keys),
+        )
+        .await;
+        match &app.mode {
+            UiMode::OperationResult(r) => assert!(
+                matches!(r.as_ref(), OperationResult::Info(m) if m.contains("Select a dispute"))
+            ),
+            other => panic!("expected selection hint, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ctrl_k_u_then_enter_checks_the_pinned_dispute_order() {
+        let order_id = uuid::Uuid::from_u128(43);
+        let mut app = app_with_selected_dispute(order_id);
+        let keys = Keys::generate();
+        for key in [
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+        ] {
+            dispatch_test_key_with_admin_keys(&mut app, key, Some(&keys)).await;
+        }
+        assert!(
+            matches!(
+                app.mode,
+                UiMode::DisputeActionsPopup {
+                    selected_index: 4,
+                    ..
+                }
+            ),
+            "U only highlights the row"
+        );
+        dispatch_test_key_with_admin_keys(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Some(&keys),
+        )
+        .await;
+        assert_waiting_for_order(&app, order_id);
+    }
+
+    #[tokio::test]
+    async fn order_info_view_scrolls_with_arrows_and_pages_then_closes() {
+        use crate::ui::{AdminTab, Tab};
+        let mut app = AppState::new(UserRole::Admin);
+        app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
+        app.mode = UiMode::AdminMode(AdminMode::OrderInfoView {
+            info: Box::default(),
+            scroll: 0,
+            return_to: Box::new(UiMode::AdminMode(AdminMode::ManagingDispute)),
+        });
+        for code in [KeyCode::Down, KeyCode::Down, KeyCode::PageDown, KeyCode::Up] {
+            dispatch_observer_test_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE)).await;
+        }
+        match &app.mode {
+            UiMode::AdminMode(AdminMode::OrderInfoView { scroll, .. }) => assert_eq!(*scroll, 11),
+            other => panic!("expected snapshot view, got {other:?}"),
+        }
+        dispatch_observer_test_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await;
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ManagingDispute)
+        ));
     }
 
     #[tokio::test]

@@ -39,12 +39,14 @@ pub const HELP_DIP_END_BOTTOM: &str = "End: Jump to bottom of chat";
 pub const HELP_DIP_SHIFT_F_RESOLVE: &str = "Shift+F: Resolve (finalize) dispute";
 pub const HELP_DIP_SHIFT_R_RECOVER: &str =
     "Shift+R: Pick missing taken disputes to recover (↑↓ Space Enter)";
+pub const HELP_DIP_SHIFT_U_ORDER_STATE: &str =
+    "Shift+U: Check the real order state from Mostro (database + Lightning, read-only)";
 /// INSERT / COMMAND for dispute chat (name kept for call-site stability; not Shift+I).
 pub const HELP_DIP_SHIFT_I_INPUT: &str =
     "i / Insert: Enter INSERT on BUYER/SELLER (not SERBERO). Esc: leave → COMMAND";
 /// Ctrl+K dispute actions (same outcomes as COMMAND Shift/Delete shortcuts).
 pub const HELP_DIP_CTRL_K_ACTIONS: &str =
-    "Ctrl+K: Dispute actions — letter selects, Enter confirms (Resolve / Recover / Filter / Remove)";
+    "Ctrl+K: Dispute actions — letter selects, Enter confirms (Resolve / Recover / Filter / Remove / State)";
 pub const HELP_DIP_DELETE_LOCAL: &str = "Delete: Remove selected dispute from local DB (sidebar)";
 pub const HELP_DIP_ENTER_SEND: &str =
     "Enter: Send message (INSERT; draft must match live dispute/party)";

@@ -359,7 +359,7 @@ Enter Send · Esc Commands · Ctrl+K Actions · Ctrl+H Help · Ctrl+C Copy
 6. **Check privacy**: Privacy labels ("Yes" = private mode / "No" = public mode) indicate whether user info may be limited
 7. **Switch parties**: Use Tab to alternate between buyer and seller chats
 8. **Scroll history**: Use PageUp/PageDown to review full conversation history, or End to jump to latest
-9. **Use COMMAND for shortcuts**: Press Esc to leave INSERT before Shift+F / Shift+R / Delete (or use Ctrl+K Actions)
+9. **Use COMMAND for shortcuts**: Press Esc to leave INSERT before Shift+F / Shift+R / Shift+U / Delete (or use Ctrl+K Actions)
 10. **Monitor scrollbar**: Visual scrollbar on the right shows your position in the chat history
 
 ## Related Files

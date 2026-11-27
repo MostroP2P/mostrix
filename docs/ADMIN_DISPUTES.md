@@ -91,9 +91,10 @@ The interface is divided into three main sections:
 - **Tab / Shift+Tab**: Cycle panes BUYER → SELLER → SERBERO (assistant messages, read-only; clears draft; forces COMMAND on SERBERO)
 - **i / Insert**: Enter **INSERT** on BUYER/SELLER only (not SERBERO). **Esc** leaves INSERT → **COMMAND** (draft kept for the same dispute/party)
 - **Enter**: Send message (when INSERT and input has text; ownership must match live target)
-- **Ctrl+K**: Dispute actions popup (Resolve / Recover / Filter / Remove). Pins the selected **dispute id** at open so a list refresh cannot retarget Resolve/Remove. **↑↓ or letter** moves the highlight; **Enter** confirms (letters do not execute). Works in INSERT and COMMAND
+- **Ctrl+K**: Dispute actions popup (Resolve / Recover / Filter / Remove / State). Pins the selected **dispute id** at open so a list refresh cannot retarget Resolve/Remove. **↑↓ or letter** moves the highlight; **Enter** confirms (letters do not execute). Works in INSERT and COMMAND
 - **Shift+F**: Open finalization popup (COMMAND only; also via Ctrl+K → F)
 - **Shift+R**: Recover missing taken disputes (COMMAND only; also via Ctrl+K → R)
+- **Shift+U**: Check the real order state from Mostro, read-only (COMMAND only; also via Ctrl+K → U); see below
 - **Shift+C**: Toggle In Progress / Finalized filter (COMMAND only; also via Ctrl+K → C; clears draft)
 - **Delete**: Remove selected dispute from local DB (COMMAND only; also via Ctrl+K → D)
 - **Ctrl+T**: Take over a dispute Serbero handed off or is mediating (also on Disputes Pending); see below
@@ -407,6 +408,19 @@ On the **Disputes in Progress** tab, press **Shift+R**:
 5. When this admin is already the assigned solver, Mostro returns `AdminTookDispute` + `SolverDisputeInfo` again and the row is saved; `CantDo` (e.g. another solver owns it) is counted as rejected in the summary toast
 
 Relay events alone cannot hydrate In Progress: kind 38386 does not carry `SolverDisputeInfo`.
+
+#### Checking the real order state (Shift+U)
+
+The public order event only says `pending`, `in-progress`, `success` or `canceled`. **Shift+U** (or **Ctrl+K → U**) on **Disputes in Progress** sends `AdminOrderInfo` for the order of the selected dispute and shows Mostro's answer in a read-only popup. Nothing changes on Mostro or locally, so there is no confirmation step, and it works on finalized disputes and in the SERBERO pane too. The admin key and every registered solver (`read` or `read-write`) may ask, about any order of the node; another key gets "neither the admin nor a registered solver", an unknown order "Mostro has no order".
+
+The popup shows, in this order:
+
+1. **Check**: only when something needs attention. ⛔ when the stored status and the Lightning node contradict each other (e.g. status `dispute` with the hold invoice not `accepted`, so settling or canceling would fail; a canceled order whose funds are still locked), a failed payment to the buyer or a failed bond payout; ⚠ when the Lightning node did not answer; ℹ for a slashed bond whose payout is pending. States that may briefly lag behind the status are not flagged.
+2. **Order (database)**: the real stored status (not the reduced public one), who opened the dispute or asked for a cooperative cancel.
+3. **Escrow**: the seller's hold invoice as the Lightning node reports it (`open`, `accepted`, `settled`, `canceled`, `not found`, `unavailable`) and since when it is held, or the Cashu mint and lock time.
+4. **Payout to buyer**, **Bonds** and **Details** (amounts, fees, times, trade pubkeys).
+
+Database and Lightning values are shown side by side and never merged. **↑↓ / PgUp / PgDn** scroll, **Esc / Enter** close. **Esc** while waiting cancels the request; a late answer is then ignored.
 
 ### Dispute Information Structure
 
@@ -802,9 +816,10 @@ Buyers and sellers can send encrypted file or image attachments in dispute chat.
 
 - **i / Esc**: INSERT typing / COMMAND shortcuts (aligned with My Trades; not on SERBERO)
 - **Enter**: Send message (when INSERT, ownership matches live dispute/party)
-- **Ctrl+K**: Dispute actions (Resolve / Recover / Filter / Remove); pin dispute id; letter selects, Enter confirms
+- **Ctrl+K**: Dispute actions (Resolve / Recover / Filter / Remove / State); pin dispute id; letter selects, Enter confirms
 - **Shift+F**: Open finalization popup (COMMAND)
 - **Shift+R**: Recover missing taken disputes — orphan picker (↑↓ / Space), then `AdminTakeDispute` for selected IDs only (COMMAND)
+- **Shift+U**: Check the real order state (`AdminOrderInfo`, database + Lightning, read-only) (COMMAND)
 - **Tab**: Cycle Buyer / Seller / SERBERO (clears draft)
 - **PageUp/PageDown**: Scroll through message history
 - **End**: Jump to bottom of chat (latest messages)

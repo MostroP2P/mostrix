@@ -941,6 +941,15 @@ pub fn handle_enter_key(app: &mut AppState, ctx: &super::EnterKeyContext<'_>) ->
             app.mode = UiMode::AdminMode(AdminMode::WaitingDeleteAdminDispute);
             true
         }
+        UiMode::AdminMode(mode @ AdminMode::WaitingOrderInfo { .. }) => {
+            // Stay on the waiting overlay until the reply (or Esc).
+            app.mode = UiMode::AdminMode(mode);
+            true
+        }
+        UiMode::AdminMode(AdminMode::OrderInfoView { return_to, .. }) => {
+            app.mode = *return_to;
+            true
+        }
         UiMode::AdminMode(AdminMode::WaitingAddSolver) => {
             // No action while waiting
             true
