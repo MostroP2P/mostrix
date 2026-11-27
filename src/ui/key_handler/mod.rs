@@ -23,7 +23,6 @@ use crate::ui::{
     helpers::{
         active_order_chat_list_snapshot, get_order_attachment_messages,
         get_visible_attachment_messages, is_dispute_finalized, selected_filtered_dispute,
-        selected_pending_dispute,
     },
     order_info_popup::scroll_order_info,
     orders::{OrderBookFilterField, OrderBookFilterState, OrderBookFilters},
@@ -2338,44 +2337,6 @@ pub fn handle_key_event(
         return Some(true);
     }
 
-    // Disputes Pending: Shift+U checks the order behind the highlighted dispute
-    // before taking it (read-only; Mostro answers for any order of the node).
-    if let Tab::Admin(AdminTab::DisputesPending) = app.active_tab {
-        let shift_u = key_event.modifiers.contains(KeyModifiers::SHIFT)
-            && !key_event
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-            && matches!(code, KeyCode::Char('u') | KeyCode::Char('U'));
-        if shift_u && matches!(app.mode, UiMode::AdminMode(AdminMode::Normal)) {
-            let order_id = match disputes.lock() {
-                Ok(list) => selected_pending_dispute(app, &list).map(|d| d.order_id),
-                Err(e) => {
-                    request_fatal_restart(format!(
-                        "Mostrix encountered an internal error (poisoned disputes lock: {e}). Please restart the app."
-                    ));
-                    return Some(true);
-                }
-            };
-            match order_id {
-                Some(order_id) => {
-                    let deps = admin_handlers::OrderInfoDeps {
-                        admin_keys: admin_chat_keys,
-                        client,
-                        current_mostro_pubkey,
-                        order_result_tx,
-                    };
-                    admin_handlers::request_admin_order_info(app, order_id, &deps);
-                }
-                None => {
-                    app.mode = UiMode::operation_result(OperationResult::Info(
-                        "Select a dispute to check its order state.".to_string(),
-                    ));
-                }
-            }
-            return Some(true);
-        }
-    }
-
     // Disputes in Progress: Ctrl+K Actions, i → INSERT, COMMAND-layer Shift chords.
     // Handled before admin chat input so INSERT typing does not steal them.
     if let Tab::Admin(AdminTab::DisputesInProgress) = app.active_tab {
@@ -4391,6 +4352,26 @@ mod key_handler_tests {
     }
 
     #[tokio::test]
+    async fn a_nil_order_id_is_never_sent_to_mostro() {
+        let mut app = app_with_selected_dispute(uuid::Uuid::nil());
+        let keys = Keys::generate();
+        dispatch_test_key_with_admin_keys(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT),
+            Some(&keys),
+        )
+        .await;
+        match &app.mode {
+            UiMode::OperationResult(r) => assert!(
+                matches!(r.as_ref(), OperationResult::Error(m) if m.contains("not known yet")),
+                "got {r:?}"
+            ),
+            other => panic!("expected an error popup, got {other:?}"),
+        }
+        assert_eq!(app.admin_order_info_seq, 0);
+    }
+
+    #[tokio::test]
     async fn shift_u_types_a_capital_in_insert_and_needs_a_selection() {
         let order_id = uuid::Uuid::from_u128(42);
         let keys = Keys::generate();
@@ -4473,13 +4454,14 @@ mod key_handler_tests {
     }
 
     #[tokio::test]
-    async fn shift_u_on_disputes_pending_asks_about_the_highlighted_order() {
-        let order_id = uuid::Uuid::from_u128(46);
+    async fn shift_u_on_disputes_pending_sends_no_order_info_request() {
+        // Kind-38386 dispute events carry no order id, so a pending dispute's
+        // `order_id` is nil: asking Mostro about it would only get `not_found`.
         let dispute = Dispute {
             id: uuid::Uuid::from_u128(47),
-            order_id,
+            order_id: uuid::Uuid::nil(),
             status: "initiated".into(),
-            order_previous_status: "active".into(),
+            order_previous_status: String::new(),
             solver_pubkey: None,
             created_at: 0,
             taken_at: 0,
@@ -4495,20 +4477,15 @@ mod key_handler_tests {
             vec![dispute],
         )
         .await;
-        match &app.mode {
-            UiMode::AdminMode(AdminMode::WaitingOrderInfo {
-                order_id: waiting,
-                return_to,
-                ..
-            }) => {
-                assert_eq!(*waiting, order_id);
-                assert!(matches!(
-                    return_to.as_ref(),
-                    UiMode::AdminMode(AdminMode::Normal)
-                ));
-            }
-            other => panic!("expected WaitingOrderInfo, got {other:?}"),
-        }
+        assert!(
+            !matches!(
+                app.mode,
+                UiMode::AdminMode(AdminMode::WaitingOrderInfo { .. })
+            ),
+            "got {:?}",
+            app.mode
+        );
+        assert_eq!(app.admin_order_info_seq, 0);
     }
 
     #[tokio::test]

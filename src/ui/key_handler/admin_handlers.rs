@@ -473,6 +473,11 @@ fn spawn_admin_order_info(
     order_id: Uuid,
     deps: &OrderInfoDeps<'_>,
 ) -> Result<u64, String> {
+    // A nil id is a placeholder (e.g. a relay dispute event, which carries no
+    // order id), never a real order: do not ask Mostro about it.
+    if order_id.is_nil() {
+        return Err("The order of this dispute is not known yet.".to_string());
+    }
     let Some(admin_keys) = deps.admin_keys.cloned() else {
         return Err("Admin private key not configured".to_string());
     };

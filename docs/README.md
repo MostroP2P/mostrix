@@ -23,7 +23,7 @@ Index of architecture and feature guides for the Mostrix TUI client. The [root R
 
 ## Admin
 
-- **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) — Tabs, kind-14 dispute chat (`K_conv` / `K_sign`), Observer `K_conv` disclosure, workflows; **id-based dispute selection** + draft ownership (`admin_chat_draft_owner`); scrollable sidebar; dispute/Observer **keycap bars** (SERBERO read-only; Actions pin dispute id; Observer loaded-key pin + zeroize); **real order state** via **Shift+U** / **Ctrl+K → U** (`AdminOrderInfo` snapshot popup with ⛔/⚠/ℹ Check, also on Disputes Pending)
+- **Admin Disputes**: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md) — Tabs, kind-14 dispute chat (`K_conv` / `K_sign`), Observer `K_conv` disclosure, workflows; **id-based dispute selection** + draft ownership (`admin_chat_draft_owner`); scrollable sidebar; dispute/Observer **keycap bars** (SERBERO read-only; Actions pin dispute id; Observer loaded-key pin + zeroize); **real order state** via **Shift+U** / **Ctrl+K → U** (`AdminOrderInfo` snapshot popup with ⛔/⚠/ℹ Check; Disputes in Progress only, since relay dispute events carry no order id)
 - **Finalize disputes**: [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md) — Inline finalize popup (💰 pay / ↩️ refund, inner **Admin settle** / **Admin cancel**); open via Shift+F or **Ctrl+K → F**; admin `wait_for_dm` + `CantDo`; background **Mostro check** (`AdminOrderInfo`) above the buttons and above YES; multi-line success popup; trader **AddBondInvoice** payout with follow-up popup (`OpenInvoicePopup` / `PaymentRequestRequired`)
 
 ## Contributing & tooling

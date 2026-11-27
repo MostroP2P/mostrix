@@ -423,7 +423,7 @@ The popup shows, in this order:
 
 Database and Lightning values are shown side by side and never merged. **↑↓ / PgUp / PgDn** scroll, **Esc / Enter** close. **Esc** while waiting cancels the request; a late answer is then ignored.
 
-**Shift+U** also works on **Disputes Pending**, for the highlighted dispute, so you can check an order before taking it.
+**Not on Disputes Pending**: the kind-38386 dispute event carries no order id (only the dispute id, status, initiator and open time), so Mostrix does not know which order a pending dispute belongs to until it is taken (`SolverDisputeInfo`). `AdminOrderInfo` takes an order id, so the check is only available on **Disputes in Progress**. A nil order id is never sent to Mostro.
 
 **In the Resolve review**: opening it (**Shift+F** / **Ctrl+K → F**) sends the same query in the background, and the review shows a one-line **Mostro check** above the buttons, e.g. `✅ Mostro check: status dispute, hold invoice accepted (funds locked)`, or the most serious warning (`⛔ … escrow is not locked, so settling or canceling it will fail`). The same line is repeated in the Yes/No confirmation, right above YES. It never blocks the action: when the Lightning node is unavailable the check says so and the admin decides.
 

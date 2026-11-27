@@ -721,7 +721,6 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DP_ENTER_TAKE.to_string(),
                 HELP_DP_SELECT_DISPUTE.to_string(),
                 HELP_CTRL_T_TAKEOVER.to_string(),
-                HELP_DP_SHIFT_U_ORDER_STATE.to_string(),
             ],
         ),
         Tab::Admin(AdminTab::Observer) => (
