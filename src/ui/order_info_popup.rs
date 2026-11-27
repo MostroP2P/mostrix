@@ -284,6 +284,7 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
     }
     // mostrod claims the payout only in `settled-hold-invoice` and moves the
     // order to `success` once it is paid: any other pairing is a contradiction.
+    // `settled-by-admin` / `completed-by-admin` are terminal like `success`.
     if let (Some(state @ (PayoutState::InFlight | PayoutState::Succeeded)), Some(st)) =
         (payout_state, status)
     {
@@ -299,11 +300,15 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
                 "The buyer was paid but the status is still settled-hold-invoice: \
                  Mostro has not recorded the success yet.",
             )),
-            (Status::Success, _) => out.push(OrderInfoWarning::new(
-                Danger,
-                "Status is success but the payment to the buyer is still in flight.",
-            )),
-            (Status::SettledByAdmin | Status::CompletedByAdmin, _) => {}
+            (Status::Success | Status::SettledByAdmin | Status::CompletedByAdmin, _) => {
+                out.push(OrderInfoWarning::new(
+                    Danger,
+                    format!(
+                        "Status is {} but the payment to the buyer is still in flight.",
+                        info.status
+                    ),
+                ))
+            }
             _ => out.push(OrderInfoWarning::new(
                 Danger,
                 format!(
@@ -1016,6 +1021,18 @@ mod tests {
                 "still in flight",
             ),
             (
+                "settled-by-admin",
+                PayoutState::InFlight,
+                WarningLevel::Danger,
+                "still in flight",
+            ),
+            (
+                "completed-by-admin",
+                PayoutState::InFlight,
+                WarningLevel::Danger,
+                "still in flight",
+            ),
+            (
                 "settled-hold-invoice",
                 PayoutState::Succeeded,
                 WarningLevel::Caution,
@@ -1038,9 +1055,14 @@ mod tests {
             );
             assert!(!summary(info).0.starts_with("✅"), "{status} + {state:?}");
         }
-        // The normal path: paying in settled-hold-invoice, paid in success.
+        // The normal path: paying in settled-hold-invoice, paid in a terminal status.
         assert!(levels(&with_payout("settled-hold-invoice", PayoutState::InFlight)).is_empty());
-        assert!(levels(&with_payout("success", PayoutState::Succeeded)).is_empty());
+        for status in ["success", "settled-by-admin", "completed-by-admin"] {
+            assert!(
+                levels(&with_payout(status, PayoutState::Succeeded)).is_empty(),
+                "{status}"
+            );
+        }
     }
 
     #[test]
