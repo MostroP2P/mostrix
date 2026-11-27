@@ -9,7 +9,10 @@
 use std::str::FromStr;
 
 use crossterm::event::KeyCode;
-use mostro_core::prelude::{BondState, HoldInvoiceState, OrderInfo, PayoutState, Status};
+use mostro_core::prelude::{
+    BondKind, BondRole, BondSlashReason, BondState, HoldInvoiceState, OrderInfo, PayoutState,
+    Status,
+};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -160,17 +163,32 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
         ));
     }
 
-    if info.hold_invoice.is_none() && info.cashu_escrow.is_none() {
-        // A running or disputed trade always has an escrow (Lightning or Cashu).
-        if let Some(Status::Active | Status::FiatSent | Status::Dispute) = status {
+    // A running or disputed trade always has a locked escrow (Lightning or Cashu).
+    let running = matches!(
+        status,
+        Some(Status::Active | Status::FiatSent | Status::Dispute)
+    );
+    match (&info.hold_invoice, &info.cashu_escrow) {
+        (None, None) if running => out.push(OrderInfoWarning::new(
+            Danger,
+            format!(
+                "Status is {} but the order has no escrow (no hold invoice, no Cashu escrow).",
+                info.status
+            ),
+        )),
+        // On a Cashu node every order names its mint from creation; the lock
+        // time is set together with the move to `active`.
+        (None, Some(cashu)) if running && cashu.locked_at.is_none() => {
             out.push(OrderInfoWarning::new(
                 Danger,
                 format!(
-                    "Status is {} but the order has no escrow (no hold invoice, no Cashu escrow).",
+                    "Status is {} but the Cashu escrow is not locked: there are no funds to \
+                     release or refund.",
                     info.status
                 ),
-            ));
+            ))
         }
+        _ => {}
     }
 
     if let Some(hold) = &info.hold_invoice {
@@ -258,7 +276,43 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
             Caution,
             "The payment to the buyer is in a state unknown to this build.",
         )),
+        Some(PayoutState::NotFound) => out.push(OrderInfoWarning::new(
+            Caution,
+            "The Lightning node has no record of the payment to the buyer.",
+        )),
         _ => {}
+    }
+    // mostrod claims the payout only in `settled-hold-invoice` and moves the
+    // order to `success` once it is paid: any other pairing is a contradiction.
+    if let (Some(state @ (PayoutState::InFlight | PayoutState::Succeeded)), Some(st)) =
+        (payout_state, status)
+    {
+        let label = payout_label(state).0;
+        match (st, state) {
+            (Status::SettledHoldInvoice, PayoutState::InFlight)
+            | (
+                Status::Success | Status::SettledByAdmin | Status::CompletedByAdmin,
+                PayoutState::Succeeded,
+            ) => {}
+            (Status::SettledHoldInvoice, _) => out.push(OrderInfoWarning::new(
+                Caution,
+                "The buyer was paid but the status is still settled-hold-invoice: \
+                 Mostro has not recorded the success yet.",
+            )),
+            (Status::Success, _) => out.push(OrderInfoWarning::new(
+                Danger,
+                "Status is success but the payment to the buyer is still in flight.",
+            )),
+            (Status::SettledByAdmin | Status::CompletedByAdmin, _) => {}
+            _ => out.push(OrderInfoWarning::new(
+                Danger,
+                format!(
+                    "Status is {} but the payment to the buyer is {label}: the escrow was \
+                     already released.",
+                    info.status
+                ),
+            )),
+        }
     }
     // The database flag stands on its own: an unreachable node must not hide
     // a failure Mostro already recorded. Skipped when Lightning reports it too.
@@ -289,7 +343,27 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
                     bond.amount
                 ),
             )),
+            BondState::Unknown => out.push(OrderInfoWarning::new(
+                Caution,
+                format!(
+                    "The {who} bond ({} sats) is in a state unknown to this build.",
+                    bond.amount
+                ),
+            )),
             _ => {}
+        }
+        if bond.role == BondRole::Unknown
+            || bond.kind == BondKind::Unknown
+            || bond.slash_reason == Some(BondSlashReason::Unknown)
+        {
+            out.push(OrderInfoWarning::new(
+                Caution,
+                format!(
+                    "A bond row ({} sats) has a role, kind or slash reason unknown to this \
+                     build: check it before releasing or slashing.",
+                    bond.amount
+                ),
+            ));
         }
     }
 
@@ -347,7 +421,10 @@ pub fn order_check_summary(state: &OrderCheckState) -> (String, Color) {
             }
             let escrow = match (&info.hold_invoice, &info.cashu_escrow) {
                 (Some(hold), _) => format!("hold invoice {}", hold_invoice_label(hold.state).0),
-                (None, Some(_)) => "Cashu escrow".to_string(),
+                (None, Some(cashu)) if cashu.locked_at.is_some() => {
+                    "Cashu escrow locked".to_string()
+                }
+                (None, Some(_)) => "Cashu escrow not locked".to_string(),
                 (None, None) => "no hold invoice".to_string(),
             };
             (
@@ -856,6 +933,153 @@ mod tests {
             let (text, color) = order_check_summary(&OrderCheckState::Ready(Box::new(info)));
             assert!(text.starts_with("⛔"), "{text}");
             assert_eq!(color, Color::Red);
+        }
+    }
+
+    fn with_payout(status: &str, state: PayoutState) -> OrderInfo {
+        let hold = if status == "dispute" {
+            HoldInvoiceState::Accepted
+        } else {
+            HoldInvoiceState::Settled
+        };
+        let mut info = with_hold(status, hold);
+        info.payout = Some(PayoutInfo {
+            state,
+            failure_reason: None,
+            resolved_at: None,
+        });
+        info
+    }
+
+    fn cashu(status: &str, locked_at: Option<i64>) -> OrderInfo {
+        OrderInfo {
+            status: status.into(),
+            cashu_escrow: Some(CashuEscrowInfo {
+                mint_url: "https://mint.example".into(),
+                locked_at,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn summary(info: OrderInfo) -> (String, Color) {
+        order_check_summary(&OrderCheckState::Ready(Box::new(info)))
+    }
+
+    #[test]
+    fn unlocked_cashu_escrow_on_a_running_trade_is_a_danger() {
+        for status in ["active", "fiat-sent", "dispute"] {
+            let warnings = order_info_warnings(&cashu(status, None));
+            assert_eq!(warnings.len(), 1, "{status}: {warnings:?}");
+            assert_eq!(warnings[0].level, WarningLevel::Danger);
+            assert!(warnings[0].text.contains("not locked"), "{:?}", warnings[0]);
+            let (text, color) = summary(cashu(status, None));
+            assert!(text.starts_with("⛔"), "{text}");
+            assert_eq!(color, Color::Red);
+
+            let (text, color) = summary(cashu(status, Some(1)));
+            assert_eq!(
+                text,
+                format!("✅ Mostro check: status {status}, Cashu escrow locked")
+            );
+            assert_eq!(color, Color::Green);
+        }
+        // Before the take the mint is known but nothing is locked yet.
+        assert!(levels(&cashu("pending", None)).is_empty());
+    }
+
+    #[test]
+    fn payout_contradicting_the_status_is_never_green() {
+        for (status, state, level, needle) in [
+            (
+                "dispute",
+                PayoutState::Succeeded,
+                WarningLevel::Danger,
+                "already released",
+            ),
+            (
+                "dispute",
+                PayoutState::InFlight,
+                WarningLevel::Danger,
+                "already released",
+            ),
+            (
+                "canceled",
+                PayoutState::Succeeded,
+                WarningLevel::Danger,
+                "already released",
+            ),
+            (
+                "success",
+                PayoutState::InFlight,
+                WarningLevel::Danger,
+                "still in flight",
+            ),
+            (
+                "settled-hold-invoice",
+                PayoutState::Succeeded,
+                WarningLevel::Caution,
+                "not recorded the success",
+            ),
+            (
+                "success",
+                PayoutState::NotFound,
+                WarningLevel::Caution,
+                "no record of the payment",
+            ),
+        ] {
+            let info = with_payout(status, state);
+            let warnings = order_info_warnings(&info);
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.level == level && w.text.contains(needle)),
+                "{status} + {state:?}: {warnings:?}"
+            );
+            assert!(!summary(info).0.starts_with("✅"), "{status} + {state:?}");
+        }
+        // The normal path: paying in settled-hold-invoice, paid in success.
+        assert!(levels(&with_payout("settled-hold-invoice", PayoutState::InFlight)).is_empty());
+        assert!(levels(&with_payout("success", PayoutState::Succeeded)).is_empty());
+    }
+
+    #[test]
+    fn unknown_bond_values_are_cautions() {
+        let bond = BondInfo {
+            role: BondRole::Taker,
+            amount: 500,
+            state: BondState::Locked,
+            slash_reason: None,
+            kind: BondKind::Bond,
+            root_order_id: None,
+        };
+        let mut info = with_hold("dispute", HoldInvoiceState::Accepted);
+        info.bonds = vec![bond.clone()];
+        assert!(levels(&info).is_empty());
+
+        for unknown in [
+            BondInfo {
+                state: BondState::Unknown,
+                ..bond.clone()
+            },
+            BondInfo {
+                role: BondRole::Unknown,
+                ..bond.clone()
+            },
+            BondInfo {
+                kind: BondKind::Unknown,
+                ..bond.clone()
+            },
+            BondInfo {
+                slash_reason: Some(BondSlashReason::Unknown),
+                ..bond.clone()
+            },
+        ] {
+            info.bonds = vec![unknown.clone()];
+            assert_eq!(levels(&info), vec![WarningLevel::Caution], "{unknown:?}");
+            let (text, color) = summary(info.clone());
+            assert!(text.starts_with("⚠"), "{unknown:?}: {text}");
+            assert_eq!(color, Color::Yellow);
         }
     }
 
