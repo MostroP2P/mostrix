@@ -1,5 +1,7 @@
+use mostro_core::prelude::OrderInfo;
+
 use crate::shared::permissions::SolverPermission;
-use crate::ui::KeyInputState;
+use crate::ui::{KeyInputState, UiMode};
 use crate::util::order_utils::BondSlashChoice;
 
 #[derive(Clone, Debug)]
@@ -82,13 +84,13 @@ pub enum AdminMode {
     WaitingOrderInfo {
         order_id: uuid::Uuid,
         seq: u64,
-        return_to: Box<crate::ui::UiMode>,
+        return_to: Box<UiMode>,
     },
     /// Read-only snapshot of one order (database and Lightning side by side).
     OrderInfoView {
-        info: Box<mostro_core::prelude::OrderInfo>,
+        info: Box<OrderInfo>,
         /// First visible line of the snapshot.
         scroll: u16,
-        return_to: Box<crate::ui::UiMode>,
+        return_to: Box<UiMode>,
     },
 }

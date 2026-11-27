@@ -416,7 +416,7 @@ The public order event only says `pending`, `in-progress`, `success` or `cancele
 
 The popup shows, in this order:
 
-1. **Check**: only when something needs attention. ⛔ when the stored status and the Lightning node contradict each other (e.g. status `dispute` with the hold invoice not `accepted`, so settling or canceling would fail; a canceled order whose funds are still locked), a failed payment to the buyer or a failed bond payout; ⚠ when the Lightning node did not answer; ℹ for a slashed bond whose payout is pending. States that may briefly lag behind the status are not flagged.
+1. **Check**: only when something needs attention. ⛔ when the stored status and the Lightning node contradict each other (e.g. status `dispute` with the hold invoice not `accepted`, so settling or canceling would fail; a canceled order whose funds are still locked; an active, fiat-sent or disputed order with no escrow at all), a failed payment to the buyer (also when the Lightning node is down, since the failure is recorded in Mostro's database) or a failed bond payout; ⚠ when the Lightning node did not answer, or when a status, hold invoice or payout state is unknown to this build (it cannot be verified, so it is never shown as ✅); ℹ for a slashed bond whose payout is pending. States that may briefly lag behind the status are not flagged.
 2. **Order (database)**: the real stored status (not the reduced public one), who opened the dispute or asked for a cooperative cancel.
 3. **Escrow**: the seller's hold invoice as the Lightning node reports it (`open`, `accepted`, `settled`, `canceled`, `not found`, `unavailable`) and since when it is held, or the Cashu mint and lock time.
 4. **Payout to buyer**, **Bonds** and **Details** (amounts, fees, times, trade pubkeys).

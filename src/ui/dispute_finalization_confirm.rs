@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::{helpers, BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::order_info_popup::{order_check_for, order_check_paragraph};
 use crate::util::order_utils::BondSlashChoice;
 
 /// Render the dispute finalization confirmation popup
@@ -65,7 +66,7 @@ pub fn render_finalization_confirm(
         return;
     };
 
-    let order_check = crate::ui::order_info_popup::order_check_for(app, &selected_dispute.id);
+    let order_check = order_check_for(app, &selected_dispute.id);
     let area = f.area();
     let popup_width = 70.min(area.width.saturating_sub(4));
     let popup_height =
@@ -127,8 +128,7 @@ pub fn render_finalization_confirm(
 
     if let Some(state) = order_check {
         f.render_widget(
-            crate::ui::order_info_popup::order_check_paragraph(state)
-                .alignment(ratatui::layout::Alignment::Center),
+            order_check_paragraph(state).alignment(ratatui::layout::Alignment::Center),
             chunks[check_chunk],
         );
     }

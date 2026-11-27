@@ -23,7 +23,9 @@ use crate::ui::{
     helpers::{
         active_order_chat_list_snapshot, get_order_attachment_messages,
         get_visible_attachment_messages, is_dispute_finalized, selected_filtered_dispute,
+        selected_pending_dispute,
     },
+    order_info_popup::scroll_order_info,
     orders::{OrderBookFilterField, OrderBookFilterState, OrderBookFilters},
     send_attachment_picker::{
         close_user_send_attachment_picker, explorer_selection_is_sendable_file,
@@ -34,7 +36,9 @@ use crate::ui::{
     OperationResult, Tab, TakeOrderState, UiMode, UserChatChannel, UserMode, UserTab,
     ViewingMessageButtonSelection,
 };
-use crate::util::{MostroInstanceInfo, OrderDmSubscriptionCmd, SendOrderAttachmentJob};
+use crate::util::{
+    request_fatal_restart, MostroInstanceInfo, OrderDmSubscriptionCmd, SendOrderAttachmentJob,
+};
 use crate::SETTINGS;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use mostro_core::prelude::*;
@@ -209,7 +213,7 @@ fn spawn_orders_info(
     order_result_tx: &UnboundedSender<OperationResult>,
 ) {
     let Ok(mostro_pubkey) = current_mostro_pubkey.lock().map(|pk| *pk) else {
-        crate::util::request_fatal_restart(
+        request_fatal_restart(
             "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
                 .to_string(),
         );
@@ -2344,11 +2348,9 @@ pub fn handle_key_event(
             && matches!(code, KeyCode::Char('u') | KeyCode::Char('U'));
         if shift_u && matches!(app.mode, UiMode::AdminMode(AdminMode::Normal)) {
             let order_id = match disputes.lock() {
-                Ok(list) => {
-                    crate::ui::helpers::selected_pending_dispute(app, &list).map(|d| d.order_id)
-                }
+                Ok(list) => selected_pending_dispute(app, &list).map(|d| d.order_id),
                 Err(e) => {
-                    crate::util::request_fatal_restart(format!(
+                    request_fatal_restart(format!(
                         "Mostrix encountered an internal error (poisoned disputes lock: {e}). Please restart the app."
                     ));
                     return Some(true);
@@ -2836,7 +2838,7 @@ pub fn handle_key_event(
         }
         KeyCode::Up | KeyCode::Down => {
             if let UiMode::AdminMode(AdminMode::OrderInfoView { ref mut scroll, .. }) = app.mode {
-                crate::ui::order_info_popup::scroll_order_info(scroll, code);
+                scroll_order_info(scroll, code);
                 return Some(true);
             }
             if let UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
@@ -2894,7 +2896,7 @@ pub fn handle_key_event(
         }
         KeyCode::PageUp | KeyCode::PageDown => {
             if let UiMode::AdminMode(AdminMode::OrderInfoView { ref mut scroll, .. }) = app.mode {
-                crate::ui::order_info_popup::scroll_order_info(scroll, code);
+                scroll_order_info(scroll, code);
                 return Some(true);
             }
             // Handle chat scrolling in ManagingDispute mode using ListState
@@ -3055,6 +3057,8 @@ pub fn handle_key_event(
 #[cfg(test)]
 mod key_handler_tests {
     use super::*;
+    use crate::models::AdminDispute;
+    use crate::ui::order_info_popup::OrderCheckState;
     use crate::ui::{InvoiceInputState, InvoiceNotificationActionSelection, UserRole};
     use crossterm::event::KeyModifiers;
     use uuid::Uuid;
@@ -4174,14 +4178,14 @@ mod key_handler_tests {
         let mut app = AppState::new(UserRole::Admin);
         app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-        app.dispute_filter = crate::ui::DisputeFilter::InProgress;
+        app.dispute_filter = DisputeFilter::InProgress;
         app.admin_disputes_in_progress = vec![
-            crate::models::AdminDispute {
+            AdminDispute {
                 dispute_id: "d-visible".into(),
                 status: Some("in-progress".into()),
                 ..Default::default()
             },
-            crate::models::AdminDispute {
+            AdminDispute {
                 dispute_id: "d-other".into(),
                 status: Some("in-progress".into()),
                 ..Default::default()
@@ -4214,7 +4218,7 @@ mod key_handler_tests {
         app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
         app.admin_chat_input_enabled = true;
-        app.admin_disputes_in_progress = vec![crate::models::AdminDispute {
+        app.admin_disputes_in_progress = vec![AdminDispute {
             dispute_id: "d-insert".into(),
             status: Some("in-progress".into()),
             ..Default::default()
@@ -4338,8 +4342,8 @@ mod key_handler_tests {
         let mut app = AppState::new(UserRole::Admin);
         app.active_tab = Tab::Admin(AdminTab::DisputesInProgress);
         app.mode = UiMode::AdminMode(AdminMode::ManagingDispute);
-        app.dispute_filter = crate::ui::DisputeFilter::InProgress;
-        app.admin_disputes_in_progress = vec![crate::models::AdminDispute {
+        app.dispute_filter = DisputeFilter::InProgress;
+        app.admin_disputes_in_progress = vec![AdminDispute {
             id: order_id.to_string(),
             dispute_id: "d-state".into(),
             status: Some("in-progress".into()),
@@ -4446,10 +4450,7 @@ mod key_handler_tests {
             .expect("check started");
         assert_eq!(check.order_id, order_id);
         assert_eq!(check.seq, app.admin_order_info_seq);
-        assert!(matches!(
-            check.state,
-            crate::ui::order_info_popup::OrderCheckState::Loading
-        ));
+        assert!(matches!(check.state, OrderCheckState::Loading));
 
         // Without an admin key the review still opens; the check reports why.
         let mut app = app_with_selected_dispute(order_id);
@@ -4467,7 +4468,7 @@ mod key_handler_tests {
         ));
         assert!(matches!(
             app.finalization_order_check.as_ref().map(|c| &c.state),
-            Some(crate::ui::order_info_popup::OrderCheckState::Failed(m)) if m.contains("not configured")
+            Some(OrderCheckState::Failed(m)) if m.contains("not configured")
         ));
     }
 
@@ -5158,12 +5159,11 @@ mod key_handler_tests {
 
     fn app_with_two_chatty_disputes() -> AppState {
         let mut app = chat_copy::tests::app_with_messages();
-        app.admin_disputes_in_progress
-            .push(crate::models::AdminDispute {
-                dispute_id: "dispute-2".into(),
-                status: Some("in-progress".into()),
-                ..Default::default()
-            });
+        app.admin_disputes_in_progress.push(AdminDispute {
+            dispute_id: "dispute-2".into(),
+            status: Some("in-progress".into()),
+            ..Default::default()
+        });
         let chat = app.admin_dispute_chats["dispute"].clone();
         app.admin_dispute_chats.insert("dispute-2".into(), chat);
         app.admin_chat_input_enabled = false;

@@ -17,6 +17,7 @@ use crate::ui::chat::{
 use crate::ui::helpers::OrderChatListItem;
 use crate::ui::key_handler::chat_copy::{ChatCopyFeedback, ChatCopySession};
 use crate::ui::navigation::{AdminTab, Tab, UserRole};
+use crate::ui::order_info_popup::FinalizationOrderCheck;
 use crate::ui::orders::{
     BuyerInvoicePreference, FormState, InvoiceInputState, KeyInputState, MessageNotification,
     MessageViewState, OperationResult, OrderBookFilterState, OrderBookFilters, OrderBookSort,
@@ -430,7 +431,7 @@ pub struct AppState {
     /// (cancelled or superseded requests) are dropped.
     pub admin_order_info_seq: u64,
     /// Escrow check shown in the Resolve review (keyed by order id).
-    pub finalization_order_check: Option<crate::ui::order_info_popup::FinalizationOrderCheck>,
+    pub finalization_order_check: Option<FinalizationOrderCheck>,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,
     /// Orders-tab local filters, applied after the settings currency filter.

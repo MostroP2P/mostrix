@@ -595,7 +595,7 @@ pub enum OperationResult {
     AdminOrderInfo {
         seq: u64,
         order_id: uuid::Uuid,
-        result: Result<Box<mostro_core::prelude::OrderInfo>, String>,
+        result: Result<Box<OrderInfo>, String>,
     },
     /// Local-only admin dispute removal; drop from In Progress list / chat maps.
     AdminDisputeDeleted {

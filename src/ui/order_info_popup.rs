@@ -9,15 +9,16 @@
 use std::str::FromStr;
 
 use crossterm::event::KeyCode;
-use mostro_core::prelude::{HoldInvoiceState, OrderInfo, PayoutState, Status};
+use mostro_core::prelude::{BondState, HoldInvoiceState, OrderInfo, PayoutState, Status};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use serde::Serialize;
+use uuid::Uuid;
 
-use super::helpers::{self, format_local_timestamp, render_table_list_scrollbar};
-use super::{BACKGROUND_COLOR, PRIMARY_COLOR};
+use crate::ui::helpers::{self, format_local_timestamp, render_table_list_scrollbar};
+use crate::ui::{AppState, BACKGROUND_COLOR, PRIMARY_COLOR};
 
 pub const ORDER_INFO_HINT: &str = "↑↓ PgUp/PgDn Scroll · Esc/Enter Close";
 const PAGE: u16 = 10;
@@ -148,6 +149,30 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
     let mut out = Vec::new();
     let status = Status::from_str(&info.status).ok();
 
+    // Without a known status the escrow cannot be compared with it.
+    if status.is_none() {
+        out.push(OrderInfoWarning::new(
+            Caution,
+            format!(
+                "Status {} is unknown to this build: the escrow was not checked against it.",
+                info.status
+            ),
+        ));
+    }
+
+    if info.hold_invoice.is_none() && info.cashu_escrow.is_none() {
+        // A running or disputed trade always has an escrow (Lightning or Cashu).
+        if let Some(Status::Active | Status::FiatSent | Status::Dispute) = status {
+            out.push(OrderInfoWarning::new(
+                Danger,
+                format!(
+                    "Status is {} but the order has no escrow (no hold invoice, no Cashu escrow).",
+                    info.status
+                ),
+            ));
+        }
+    }
+
     if let Some(hold) = &info.hold_invoice {
         let state = hold.state;
         let label = hold_invoice_label(state).0;
@@ -156,7 +181,10 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
                 Caution,
                 "The Lightning node did not answer: the hold invoice state is unknown.",
             )),
-            HoldInvoiceState::Unknown => {}
+            HoldInvoiceState::Unknown => out.push(OrderInfoWarning::new(
+                Caution,
+                "The hold invoice state is unknown to this build: check the escrow before acting.",
+            )),
             _ => match status {
                 // The escrow must be locked while the trade runs or is disputed.
                 Some(Status::Active | Status::FiatSent | Status::Dispute)
@@ -213,7 +241,8 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
         }
     }
 
-    match info.payout.as_ref().map(|p| p.state) {
+    let payout_state = info.payout.as_ref().map(|p| p.state);
+    match payout_state {
         Some(PayoutState::Failed) => out.push(OrderInfoWarning::new(
             Danger,
             format!(
@@ -225,27 +254,35 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
             Caution,
             "The Lightning node did not answer: the payment to the buyer is unknown.",
         )),
-        _ if info.failed_payment => out.push(OrderInfoWarning::new(
+        Some(PayoutState::Unknown) => out.push(OrderInfoWarning::new(
+            Caution,
+            "The payment to the buyer is in a state unknown to this build.",
+        )),
+        _ => {}
+    }
+    // The database flag stands on its own: an unreachable node must not hide
+    // a failure Mostro already recorded. Skipped when Lightning reports it too.
+    if info.failed_payment && payout_state != Some(PayoutState::Failed) {
+        out.push(OrderInfoWarning::new(
             Danger,
             format!(
                 "The last payment to the buyer failed (attempts: {}).",
                 info.payment_attempts
             ),
-        )),
-        _ => {}
+        ));
     }
 
     for bond in &info.bonds {
         let who = wire_name(&bond.role);
         match bond.state {
-            mostro_core::prelude::BondState::Failed => out.push(OrderInfoWarning::new(
+            BondState::Failed => out.push(OrderInfoWarning::new(
                 Danger,
                 format!(
                     "The {who} bond payout ({} sats) failed and needs operator attention.",
                     bond.amount
                 ),
             )),
-            mostro_core::prelude::BondState::PendingPayout => out.push(OrderInfoWarning::new(
+            BondState::PendingPayout => out.push(OrderInfoWarning::new(
                 Note,
                 format!(
                     "The {who} bond ({} sats) was slashed; its payout is pending.",
@@ -268,7 +305,7 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
 /// admin sees the escrow state before paying the buyer or refunding the seller.
 #[derive(Debug, Clone)]
 pub struct FinalizationOrderCheck {
-    pub order_id: uuid::Uuid,
+    pub order_id: Uuid,
     /// Request number; only the matching reply is stored.
     pub seq: u64,
     pub state: OrderCheckState,
@@ -322,10 +359,7 @@ pub fn order_check_summary(state: &OrderCheckState) -> (String, Color) {
 }
 
 /// The Resolve-review check for `order_id`, if one was started for it.
-pub fn order_check_for<'a>(
-    app: &'a crate::ui::AppState,
-    order_id: &str,
-) -> Option<&'a OrderCheckState> {
+pub fn order_check_for<'a>(app: &'a AppState, order_id: &str) -> Option<&'a OrderCheckState> {
     app.finalization_order_check
         .as_ref()
         .filter(|c| c.order_id.to_string() == order_id)
@@ -596,7 +630,11 @@ mod tests {
     };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use uuid::Uuid;
+
+    use crate::models::AdminDispute;
+    use crate::ui::dispute_finalization_confirm::render_finalization_confirm;
+    use crate::ui::UserRole;
+    use crate::util::order_utils::BondSlashChoice;
 
     fn sample() -> OrderInfo {
         OrderInfo {
@@ -754,7 +792,6 @@ mod tests {
             ("expired", HoldInvoiceState::Open),
             // May legitimately lag behind: not a contradiction.
             ("waiting-payment", HoldInvoiceState::Accepted),
-            ("dispute", HoldInvoiceState::Unknown),
         ] {
             assert!(
                 levels(&with_hold(status, state)).is_empty(),
@@ -764,9 +801,93 @@ mod tests {
         // Cashu order: no hold invoice to compare.
         assert!(levels(&OrderInfo {
             status: "dispute".into(),
+            cashu_escrow: Some(CashuEscrowInfo {
+                mint_url: "https://mint.example".into(),
+                locked_at: Some(1),
+            }),
             ..Default::default()
         })
         .is_empty());
+        // Not taken yet: no escrow is expected.
+        assert!(levels(&OrderInfo {
+            status: "pending".into(),
+            ..Default::default()
+        })
+        .is_empty());
+    }
+
+    #[test]
+    fn unverifiable_states_are_cautions_not_green() {
+        // Hold invoice state this build does not know.
+        let info = with_hold("dispute", HoldInvoiceState::Unknown);
+        assert_eq!(levels(&info), vec![WarningLevel::Caution]);
+        let (text, color) = order_check_summary(&OrderCheckState::Ready(Box::new(info)));
+        assert!(text.starts_with("⚠"), "{text}");
+        assert_eq!(color, Color::Yellow);
+
+        // Status this build does not know: the escrow is not compared with it.
+        let info = with_hold("brand-new-status", HoldInvoiceState::Accepted);
+        let warnings = order_info_warnings(&info);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].level, WarningLevel::Caution);
+        assert!(warnings[0].text.contains("brand-new-status"));
+
+        // Payout state this build does not know.
+        let mut info = with_hold("settled-hold-invoice", HoldInvoiceState::Settled);
+        info.payout = Some(PayoutInfo {
+            state: PayoutState::Unknown,
+            failure_reason: None,
+            resolved_at: None,
+        });
+        assert_eq!(levels(&info), vec![WarningLevel::Caution]);
+    }
+
+    #[test]
+    fn running_trade_without_any_escrow_is_a_danger() {
+        for status in ["active", "fiat-sent", "dispute"] {
+            let info = OrderInfo {
+                status: status.into(),
+                ..Default::default()
+            };
+            let warnings = order_info_warnings(&info);
+            assert_eq!(warnings.len(), 1, "{status}: {warnings:?}");
+            assert_eq!(warnings[0].level, WarningLevel::Danger);
+            assert!(warnings[0].text.contains("no escrow"), "{:?}", warnings[0]);
+            let (text, color) = order_check_summary(&OrderCheckState::Ready(Box::new(info)));
+            assert!(text.starts_with("⛔"), "{text}");
+            assert_eq!(color, Color::Red);
+        }
+    }
+
+    #[test]
+    fn recorded_payment_failure_survives_an_unreachable_node() {
+        let mut info = with_hold("settled-hold-invoice", HoldInvoiceState::Settled);
+        info.failed_payment = true;
+        info.payment_attempts = 2;
+        info.payout = Some(PayoutInfo {
+            state: PayoutState::Unavailable,
+            failure_reason: None,
+            resolved_at: None,
+        });
+        let warnings = order_info_warnings(&info);
+        assert_eq!(
+            warnings.iter().map(|w| w.level).collect::<Vec<_>>(),
+            vec![WarningLevel::Danger, WarningLevel::Caution]
+        );
+        assert!(
+            warnings[0].text.contains("attempts: 2"),
+            "{:?}",
+            warnings[0]
+        );
+
+        // Without the database flag only the caution remains.
+        info.failed_payment = false;
+        assert_eq!(levels(&info), vec![WarningLevel::Caution]);
+
+        // Lightning already reports the failure: a single warning, not two.
+        info.failed_payment = true;
+        info.payout.as_mut().unwrap().state = PayoutState::Failed;
+        assert_eq!(levels(&info), vec![WarningLevel::Danger]);
     }
 
     #[test]
@@ -905,8 +1026,8 @@ mod tests {
     fn confirm_step_shows_the_mostro_check_above_yes_no() {
         let order_id = Uuid::from_u128(77);
         let dispute_id = Uuid::from_u128(78);
-        let mut app = crate::ui::AppState::new(crate::ui::UserRole::Admin);
-        app.admin_disputes_in_progress = vec![crate::models::AdminDispute {
+        let mut app = AppState::new(UserRole::Admin);
+        app.admin_disputes_in_progress = vec![AdminDispute {
             id: order_id.to_string(),
             dispute_id: dispute_id.to_string(),
             ..Default::default()
@@ -921,14 +1042,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal
             .draw(|f| {
-                crate::ui::dispute_finalization_confirm::render_finalization_confirm(
-                    f,
-                    &app,
-                    &dispute_id,
-                    true,
-                    crate::util::order_utils::BondSlashChoice::None,
-                    true,
-                )
+                render_finalization_confirm(f, &app, &dispute_id, true, BondSlashChoice::None, true)
             })
             .unwrap();
         let buf = terminal.backend().buffer();

@@ -1,5 +1,6 @@
 // Order channel manager - handles order result messages from async tasks
 use crate::ui::helpers::build_active_order_chat_list;
+use crate::ui::order_info_popup::OrderCheckState;
 use crate::ui::orders::{
     merge_order_snapshots, strip_new_order_messages_and_clamp_selected,
     try_placeholder_order_message_from_payment_request, try_placeholder_order_message_from_success,
@@ -11,7 +12,7 @@ use crate::ui::{
 };
 use crate::util::chat_listener::untrack_dispute_chat_parties;
 use crate::util::order_utils::should_apply_status_transition;
-use mostro_core::prelude::{Action, Message, Payload, SmallOrder, UserInfo};
+use mostro_core::prelude::{Action, Message, OrderInfo, Payload, SmallOrder, UserInfo};
 use nostr_sdk::prelude::PublicKey;
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -290,14 +291,14 @@ fn maybe_insert_payment_request_placeholder(
 fn apply_admin_order_info_result(
     app: &mut AppState,
     seq: u64,
-    order_id: uuid::Uuid,
-    result: Result<Box<mostro_core::prelude::OrderInfo>, String>,
+    order_id: Uuid,
+    result: Result<Box<OrderInfo>, String>,
 ) {
     if let Some(check) = app.finalization_order_check.as_mut() {
         if check.seq == seq && check.order_id == order_id {
             check.state = match result {
-                Ok(info) => crate::ui::order_info_popup::OrderCheckState::Ready(info),
-                Err(message) => crate::ui::order_info_popup::OrderCheckState::Failed(message),
+                Ok(info) => OrderCheckState::Ready(info),
+                Err(message) => OrderCheckState::Failed(message),
             };
             return;
         }
@@ -686,10 +687,13 @@ pub fn handle_operation_result(mut result: OperationResult, app: &mut AppState) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::key_handler::handle_esc_key;
+    use crate::ui::order_info_popup::FinalizationOrderCheck;
     use crate::ui::orders::{
         order_message_to_notification, OrderChatStaticHeader, OrderMessage, TakeOrderState,
     };
     use crate::ui::{FormState, UserRole};
+    use crate::util::order_utils::BondSlashChoice;
 
     fn waiting_order_info(app: &mut AppState, order_id: Uuid, seq: u64) {
         app.admin_order_info_seq = seq;
@@ -706,7 +710,7 @@ mod tests {
             order_id,
             result: result
                 .map(|()| {
-                    Box::new(mostro_core::prelude::OrderInfo {
+                    Box::new(OrderInfo {
                         id: order_id,
                         status: "dispute".into(),
                         ..Default::default()
@@ -718,13 +722,12 @@ mod tests {
 
     #[test]
     fn review_check_reply_is_stored_without_leaving_the_review() {
-        use crate::ui::order_info_popup::{FinalizationOrderCheck, OrderCheckState};
         let mut app = AppState::new(UserRole::Admin);
         let order_id = Uuid::from_u128(9);
         let review = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
             dispute_id: Uuid::from_u128(10),
             selected_button_index: 1,
-            bond: crate::util::order_utils::BondSlashChoice::None,
+            bond: BondSlashChoice::None,
             slash_submenu_open: false,
             slash_submenu_index: 0,
         });
@@ -771,7 +774,7 @@ mod tests {
             }
             other => panic!("expected snapshot view, got {other:?}"),
         }
-        crate::ui::key_handler::handle_esc_key(&mut app);
+        handle_esc_key(&mut app);
         assert!(matches!(
             app.mode,
             UiMode::AdminMode(AdminMode::ManagingDispute)
@@ -811,7 +814,7 @@ mod tests {
         ));
 
         // Cancelled with Esc: the reply must not pop up over the dispute screen.
-        crate::ui::key_handler::handle_esc_key(&mut app);
+        handle_esc_key(&mut app);
         assert!(matches!(
             app.mode,
             UiMode::AdminMode(AdminMode::ManagingDispute)
