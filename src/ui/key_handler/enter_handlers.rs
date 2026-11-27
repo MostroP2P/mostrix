@@ -106,7 +106,7 @@ pub(crate) fn should_reopen_replacement_invoice(app: &AppState, msg: &OrderMessa
 }
 
 fn generate_mnemonic_12_words() -> std::result::Result<String, String> {
-    Mnemonic::generate(12)
+    Mnemonic::generate(bip39::WordCount::Words12)
         .map(|m| m.to_string())
         .map_err(|e| e.to_string())
 }

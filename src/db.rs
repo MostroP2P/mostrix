@@ -2,6 +2,7 @@
 use crate::models::User;
 use anyhow::Result;
 use bip39::Mnemonic;
+use bip39::WordCount;
 use sqlx::SqlitePool;
 use std::fs::File;
 use std::path::Path;
@@ -130,7 +131,7 @@ pub async fn init_db() -> Result<SqlitePool> {
             .fetch_one(&pool)
             .await?;
         if user_count.0 == 0 {
-            let mnemonic = Mnemonic::generate(12)?.to_string();
+            let mnemonic = Mnemonic::generate(WordCount::Words12)?.to_string();
             User::new(mnemonic, &pool).await?;
         }
     } else {
@@ -146,6 +147,14 @@ pub async fn init_db() -> Result<SqlitePool> {
     Ok(pool)
 }
 
+/// `true` for a non-empty ASCII `[A-Za-z_][A-Za-z0-9_]*` name, the only shape
+/// interpolated into SQL as a table or column name.
+pub(crate) fn is_sql_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Run database migrations for existing databases
 async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     // Migration: Add initiator_info and counterpart_info columns if they don't exist
@@ -155,10 +164,16 @@ async fn migrate_db(pool: &SqlitePool) -> Result<()> {
         table_name: &str,
         column_name: &str,
     ) -> Result<bool> {
-        let result = sqlx::query(&format!(
-            "SELECT {} FROM {} LIMIT 1",
-            column_name, table_name
-        ))
+        // Identifiers cannot be bound as parameters, so the query is built
+        // with `format!`; only plain identifiers may reach it.
+        for ident in [table_name, column_name] {
+            if !is_sql_identifier(ident) {
+                anyhow::bail!("invalid SQL identifier: {ident:?}");
+            }
+        }
+        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {column_name} FROM {table_name} LIMIT 1"
+        )))
         .fetch_optional(pool)
         .await;
 
@@ -618,6 +633,23 @@ async fn orders_table_rebuild_without_suppress_column(pool: &SqlitePool) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sql_identifier_guard_rejects_anything_but_plain_names() {
+        assert!(is_sql_identifier("admin_disputes"));
+        assert!(is_sql_identifier("_c1"));
+        for bad in [
+            "",
+            "1col",
+            "orders; DROP TABLE users",
+            "a-b",
+            "a b",
+            "\"x\"",
+            "$1",
+        ] {
+            assert!(!is_sql_identifier(bad), "{bad:?} must be rejected");
+        }
+    }
 
     #[test]
     fn sqlite_version_at_least_matches_drop_column_requirement() {
