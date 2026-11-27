@@ -14,6 +14,7 @@ This document describes how admins finalize disputes in Mostrix after reviewing 
 | **Execute layer** (`execute_admin_settle` / `cancel`) | Done | `request_id` + `wait_for_dm` + `handle_mostro_response`; expects `AdminSettled` / `AdminCanceled`, or `CooperativeCancelAccepted` when users already canceled; `CantDo` before DB update |
 | **Success / error popup** | Done | `BondSlashChoice::finalize_success_message`; word-wrapped `OperationResult::Info` in `operation_result.rs` |
 | **TUI** (slash picker + confirm summary) | Done | Inline bond button + overlay; confirm shows `bond.label()` recap |
+| **Mostro check** (`mostro-core` 0.17.4, `AdminOrderInfo`) | Done | Background escrow check when the review opens, shown above the buttons and above YES; never blocks; unknown states are ⚠, never ✅ — see [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#checking-the-real-order-state-shiftu) |
 | **`bond_enabled` gating** (kind 38385) | Done | Parse tag in [`mostro_info.rs`](../src/util/mostro_info.rs); hide Bond button when not `"true"` |
 | **Trader `AddBondInvoice`** | Done | Payout popup + `execute_add_bond_invoice`; `wait_for_dm` + follow-up via `OpenInvoicePopup` / `PaymentRequestRequired` ([MESSAGE_FLOW_AND_PROTOCOL.md](MESSAGE_FLOW_AND_PROTOCOL.md)) |
 

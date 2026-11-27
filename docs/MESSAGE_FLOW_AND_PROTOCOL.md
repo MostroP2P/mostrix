@@ -600,7 +600,7 @@ Admins resolve in-progress disputes by sending encrypted DMs signed with `admin_
 
 **Bond resolution** (Mostro anti-abuse bond Phase 2+): optional `bond_resolution: { slash_seller, slash_buyer }` on both actions only. Four combinations plus legacy `null` (= no slash). See [admin settle](https://mostro.network/protocol/admin_settle_order.html) / [admin cancel](https://mostro.network/protocol/admin_cancel_order.html).
 
-- **Client types**: `mostro-core` 0.16.0 (tested with mostrod 0.19.1) — `BondResolution`, `Payload::BondResolution`, `Status::WaitingMakerBond`, `Transport` / transport helpers, `DisputeStatus::CooperativelyCanceled`.
+- **Client types**: `mostro-core` 0.16.0+ (tested with mostrod 0.19.1; Mostrix now pins 0.17.4) — `BondResolution`, `Payload::BondResolution`, `Status::WaitingMakerBond`, `Transport` / transport helpers, `DisputeStatus::CooperativelyCanceled`.
 - **Mostrix helper**: `BondSlashChoice::to_optional_payload()` — `None` for no slash (`payload: null`), `Some(BondResolution)` when slashing; unit tests in `bond_resolution.rs`.
 - **Errors**: invalid slash (e.g. no bond for that side) → `CantDo(InvalidPayload)` → user string from [`get_cant_do_description`](../src/util/types.rs).
 - **Post-slash payout**: `Action::AddBondInvoice` with `Payload::BondPayoutRequest` (order amount = counterparty share, `slashed_at` anchor for claim deadline). Mostrix:
@@ -674,6 +674,50 @@ sequenceDiagram
 | `AdminCancel` | `AdminCanceled` | same |
 
 `execute_finalize_dispute` updates `admin_disputes` only after the low-level execute call returns `Ok`.
+
+## Admin order info (`AdminOrderInfo`)
+
+Read-only snapshot of one order for the admin key or any registered solver (`read` or `read-write`), on any order of the node and in any status. Added in **mostro-core 0.17.4**; the daemon side is [MostroP2P/mostro#1110](https://github.com/MostroP2P/mostro/pull/1110). UI and warning rules: [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#checking-the-real-order-state-shiftu).
+
+| | Shape |
+|---|---|
+| **Request** | `Message::Order` (the `order` wrapper — mostro-core rejects this action in the `dispute` wrapper used by the other admin actions), `id` = order id, `request_id`, `payload: null`, signed with `admin_privkey` |
+| **Success** | `Message::Order` with `Action::AdminOrderInfo` and `Payload::OrderInfo` (`id` must equal the request's order id) |
+| **Failure** | `CantDo(InvalidPubkey)` — key is neither admin nor solver (checked before the order lookup); `CantDo(NotFound)` — unknown order |
+
+`OrderInfo` keeps database and Lightning values side by side: `status` is the **raw stored status string** (not the reduced public one, and possibly a status this build does not know), `failed_payment` / `payment_attempts` come from the database, while `hold_invoice.state` (`HoldInvoiceState`) and `payout.state` (`PayoutState`) come from the daemon's Lightning node. Each lookup has a 2 s budget in mostrod; a node that does not answer is reported as `unavailable` and the rest of the snapshot is still sent. Every enum has a `#[serde(other)] Unknown` fallback for values added by newer daemons. `cashu_escrow` replaces `hold_invoice` on Cashu orders; `bonds` lists bond rows.
+
+**Mostrix side** ([`execute_admin_order_info`](../src/util/order_utils/execute_admin_order_info.rs)):
+
+- Checks, in order: sender is the Mostro pubkey, `handle_mostro_response` (`request_id`, `CantDo` → typed `OrderInfoRejected` with readable messages), action, `Message::verify()` (wrapper + snapshot id consistency), payload is `OrderInfo`, `info.id` matches.
+- The reply is consumed only by its `wait_for_dm` waiter (15 s); no trade-notification, admin-dispute or Serbero listener handles `AdminOrderInfo`.
+- Spawned from [`admin_handlers.rs`](../src/ui/key_handler/admin_handlers.rs) (`spawn_admin_order_info`); the result comes back as `OperationResult::AdminOrderInfo { seq, order_id, result }` and is applied by `apply_admin_order_info_result` in [`order_ch_mng.rs`](../src/util/dm_utils/order_ch_mng.rs). `seq` (`AppState.admin_order_info_seq`) drops replies to cancelled (Esc) or superseded requests.
+- Two consumers: the popup (`AdminMode::WaitingOrderInfo` → `AdminMode::OrderInfoView`, both carrying `return_to`) and the background check of the Resolve review (`AppState.finalization_order_check`, `OrderCheckState::{Loading, Ready, Failed}`), which never changes the UI mode.
+
+```mermaid
+sequenceDiagram
+    participant TUI
+    participant Execute as execute_admin_order_info
+    participant Relays
+    participant Mostro
+    participant LN as Lightning node
+
+    TUI->>Execute: Shift+U / Resolve review (order_id, seq)
+    Execute->>Relays: AdminOrderInfo DM, order wrapper (request_id)
+    Relays->>Mostro: encrypted order message
+    Mostro->>LN: hold invoice + payout lookups (2 s each)
+    LN-->>Mostro: states, or timeout → unavailable
+    Mostro-->>Relays: AdminOrderInfo + OrderInfo, or CantDo
+    Relays-->>Execute: wait_for_dm (15s)
+    Execute-->>TUI: OperationResult::AdminOrderInfo { seq, order_id, result }
+    alt seq matches the Resolve check
+        TUI->>TUI: finalization_order_check = Ready / Failed
+    else seq matches WaitingOrderInfo
+        TUI->>TUI: OrderInfoView popup (or error popup)
+    else stale
+        TUI->>TUI: dropped
+    end
+```
 
 ## Stateless Recovery
 

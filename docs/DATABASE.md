@@ -12,7 +12,7 @@ Mostrix uses SQLite for local data persistence. The database file is located at:
 
 The database is automatically created on first startup if it doesn't exist.
 
-**Source**: `src/db.rs:14`
+**Source**: `src/db.rs:23` (`init_db`)
 
 ```14:15:src/db.rs
     let app_dir = home_dir.join(format!(".{}", name));
@@ -33,15 +33,15 @@ On first startup, Mostrix:
 6. Creates the initial user record
 7. Runs database migrations for existing databases (if needed)
 
-**Source**: `src/db.rs:66`
+**Source**: `src/db.rs:129`
 
-```66:73:src/db.rs
+```129:136:src/db.rs
         // Check if a user exists, if not, create one
         let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
             .fetch_one(&pool)
             .await?;
         if user_count.0 == 0 {
-            let mnemonic = Mnemonic::generate(12)?.to_string();
+            let mnemonic = Mnemonic::generate(WordCount::Words12)?.to_string();
             User::new(mnemonic, &pool).await?;
         }
 ```
@@ -53,6 +53,7 @@ For existing databases, Mostrix automatically runs migrations to add new columns
 - **Atomic**: All migration steps are wrapped in transactions to ensure consistency.
 - **Safe**: Migrations check for column existence before attempting to add them.
 - **Error-aware**: Non-column-related errors (connection issues, table missing, etc.) are properly propagated rather than triggering incorrect migrations.
+- **Identifier-guarded**: SQLite cannot bind table or column names as `$1` parameters, so `check_column_exists(pool, table, column)` builds its probe with `format!`. Since **sqlx 0.9** a runtime string must be wrapped in `sqlx::AssertSqlSafe(..)` to be accepted by `query` / `query_as`; Mostrix only does that after [`is_sql_identifier`](../src/db.rs) accepted every interpolated name (`[A-Za-z_][A-Za-z0-9_]*`). Values are always bound, never interpolated. See [CODING_STANDARDS.md](CODING_STANDARDS.md#dynamic-sql-sqlx-09).
 
 Recent migrations for the `admin_disputes` table add the following fields:
 
@@ -62,24 +63,39 @@ Recent migrations for the `admin_disputes` table add the following fields:
 - **`buyer_chat_last_seen` / `seller_chat_last_seen`**: Per‑party chat cursor used for incremental kind-14 hydrate and chat restore at startup.
 - **`buyer_shared_key_hex` / `seller_shared_key_hex`**: Hex‑encoded ECDH IKM between the admin key and each party’s trade pubkey. Runtime chat derives `K_conv` / `K_sign` from this secret (kind-14 wrap/unwrap).
 
-**Source**: `src/db.rs:113`
+**Source**: `src/db.rs:158`
 
-```113:238:src/db.rs
+```158:544:src/db.rs
 /// Run database migrations for existing databases
 async fn migrate_db(pool: &SqlitePool) -> Result<()> {
     // Migration: Add initiator_info and counterpart_info columns if they don't exist
     // Check if columns exist by attempting to query them and checking for specific SQLite errors
-    async fn check_column_exists(pool: &SqlitePool, column_name: &str) -> Result<bool> {
+    async fn check_column_exists(
+        pool: &SqlitePool,
+        table_name: &str,
+        column_name: &str,
+    ) -> Result<bool> {
+        // Identifiers cannot be bound as parameters, so the query is built
+        // with `format!`; only plain identifiers may reach it.
+        for ident in [table_name, column_name] {
+            if !is_sql_identifier(ident) {
+                anyhow::bail!("invalid SQL identifier: {ident:?}");
+            }
+        }
+        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {column_name} FROM {table_name} LIMIT 1"
+        )))
+        .fetch_optional(pool)
+        .await;
+        // Ok → exists; "no such column" → Ok(false); any other error is propagated
         // ...
     }
 
     // Check if columns exist
-    let has_initiator_info = check_column_exists(pool, "initiator_info").await?;
-    let has_counterpart_info = check_column_exists(pool, "counterpart_info").await?;
-    let has_fiat_code = check_column_exists(pool, "fiat_code").await?;
-    let has_dispute_id = check_column_exists(pool, "dispute_id").await?;
-    let has_buyer_chat_last_seen = check_column_exists(pool, "buyer_chat_last_seen").await?;
-    let has_seller_chat_last_seen = check_column_exists(pool, "seller_chat_last_seen").await?;
+    let has_initiator_info = check_column_exists(pool, "admin_disputes", "initiator_info").await?;
+    let has_counterpart_info =
+        check_column_exists(pool, "admin_disputes", "counterpart_info").await?;
+    // ... same for fiat_code, dispute_id, buyer/seller_chat_last_seen, ...
 
     // Only run migration if at least one column is missing
     if !has_initiator_info
@@ -136,7 +152,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 ```
 
-**Source**: `src/db.rs:55`
+**Source**: `src/db.rs:87`
 
 #### User Table Fields
 

@@ -143,6 +143,27 @@ pub fn derive_trade_keys(&self, index: i64) -> Result<Keys> {
 }
 ```
 
+### Dynamic SQL (sqlx 0.9)
+
+sqlx 0.9 only accepts a `&'static str` (or a `QueryBuilder`) in `query` / `query_as`; a runtime `String` must be wrapped in `sqlx::AssertSqlSafe(..)`.
+
+- **Bind values**: use `$1`/`?` placeholders or `QueryBuilder::push_bind` for every value. Never `format!` a value into SQL.
+- **Identifiers only**: `AssertSqlSafe` is for table/column names, which SQLite cannot bind. Validate each one with [`db::is_sql_identifier`](../src/db.rs) (`[A-Za-z_][A-Za-z0-9_]*`) right before interpolating, and fail (`bail!` in code, `assert!` in tests) when it does not match.
+- **`QueryBuilder<Sqlite>`**: the lifetime parameter is gone in 0.9 (`QueryBuilder<'_, Sqlite>` no longer compiles).
+
+```rust
+for ident in [table_name, column_name] {
+    if !is_sql_identifier(ident) {
+        anyhow::bail!("invalid SQL identifier: {ident:?}");
+    }
+}
+let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+    "SELECT {column_name} FROM {table_name} LIMIT 1"
+)))
+.fetch_optional(pool)
+.await;
+```
+
 ## Code Organization Patterns
 
 ### Module Structure
@@ -236,8 +257,9 @@ Render/popup logic should be covered with **deterministic** `ratatui::backend::T
 
 ## Dependencies
 
-- **`mostro-core`**: Pin in [`Cargo.toml`](../Cargo.toml) to the version tested with the Mostro daemon you run against (currently **mostro-core 0.16.0** with **mostrod 0.19.1** — protocol v2 NIP-44 only; includes `DisputeStatus::CooperativelyCanceled`). Protocol types (`Action`, `Payload`, `BondResolution`, `CantDoReason`, `Transport`, …) must come from `mostro_core::prelude::*` — do not duplicate wire shapes in Mostrix. Re-export transport helpers from [`src/util/mod.rs`](../src/util/mod.rs) when used across the crate.
+- **`mostro-core`**: Pin in [`Cargo.toml`](../Cargo.toml) to the version tested with the Mostro daemon you run against (currently **mostro-core 0.17.4** — protocol v2 NIP-44 only; adds `Action::AdminOrderInfo` / `OrderInfo`, which needs a mostrod with [MostroP2P/mostro#1110](https://github.com/MostroP2P/mostro/pull/1110); bond types and `DisputeStatus::CooperativelyCanceled` since 0.16.0, tested with mostrod 0.19.1). Protocol types (`Action`, `Payload`, `BondResolution`, `CantDoReason`, `Transport`, …) must come from `mostro_core::prelude::*` — do not duplicate wire shapes in Mostrix. Re-export transport helpers from [`src/util/mod.rs`](../src/util/mod.rs) when used across the crate.
 - **Bond invoice replies**: shared [`payment_request_operation_result`](../src/util/order_utils/helper.rs) for `take_order` and `send_new_order` — returns `PaymentRequestRequired`, not `Success`.
+- **Admin order info**: [`execute_admin_order_info`](../src/util/order_utils/execute_admin_order_info.rs) is the only sender of `Action::AdminOrderInfo`; render and judge the reply in [`order_info_popup.rs`](../src/ui/order_info_popup.rs) (`order_info_warnings`, `order_check_summary`) — do not re-derive escrow consistency elsewhere. Every `*Unknown` enum value and an unparseable status must stay a warning, never a green check. See [ADMIN_DISPUTES.md](ADMIN_DISPUTES.md#checking-the-real-order-state-shiftu).
 - **Admin bond slash**: use [`BondSlashChoice`](../src/util/order_utils/bond_resolution.rs) — TUI labels via `label()` (emoji + text); `#[derive(Default)]` with `#[default]` on `None`; state on `ReviewingDisputeForFinalization.bond`; pass through `execute_finalize_dispute(dispute_id, bond, …)` and `bond.to_optional_payload()` on the wire (`None` → `null`); see [FINALIZE_DISPUTES.md](FINALIZE_DISPUTES.md).
 
 ## Summary Checklist
