@@ -4,6 +4,7 @@ mod bond_resolution;
 mod execute_add_invoice;
 mod execute_admin_add_solver;
 mod execute_admin_cancel;
+mod execute_admin_order_info;
 mod execute_admin_settle;
 mod execute_finalize_dispute;
 mod execute_orders_info;
@@ -26,6 +27,9 @@ pub use bond_resolution::BondSlashChoice;
 pub use execute_add_invoice::{execute_add_bond_invoice, execute_add_invoice};
 pub use execute_admin_add_solver::execute_admin_add_solver;
 pub use execute_admin_cancel::execute_admin_cancel;
+// Consumed by the disputes UI (plan steps 4-7).
+#[allow(unused_imports)]
+pub use execute_admin_order_info::{execute_admin_order_info, OrderInfoRejected};
 pub use execute_admin_settle::execute_admin_settle;
 pub use execute_finalize_dispute::execute_finalize_dispute;
 pub use execute_orders_info::{execute_orders_info, OrdersInfoSummary};
