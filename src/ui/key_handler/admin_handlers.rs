@@ -8,6 +8,7 @@ use crate::ui::key_handler::confirmation::{
 use crate::ui::key_handler::settings::try_save_admin_key_to_settings;
 use crate::ui::key_handler::validation::{normalize_to_nsec, validate_npub};
 use crate::ui::key_handler::EnterKeyContext;
+use crate::ui::order_info_popup::{FinalizationOrderCheck, OrderCheckState};
 use crate::ui::orders::OperationResult;
 use crate::ui::takeover_picker::{solver_takeover_candidates, TakeoverCandidate};
 use crate::ui::{AddSolverState, AdminMode, AdminTab, AppState, Tab, UiMode, UserRole};
@@ -416,30 +417,77 @@ pub(crate) fn request_admin_order_info(
     order_id: Uuid,
     deps: &OrderInfoDeps<'_>,
 ) {
-    let Some(admin_keys) = deps.admin_keys.cloned() else {
-        app.mode = UiMode::operation_result(OperationResult::Error(
-            "Admin private key not configured".to_string(),
-        ));
+    match spawn_admin_order_info(app, order_id, deps) {
+        Ok(seq) => {
+            let return_to = Box::new(std::mem::replace(&mut app.mode, UiMode::Normal));
+            app.mode = UiMode::AdminMode(AdminMode::WaitingOrderInfo {
+                order_id,
+                seq,
+                return_to,
+            });
+        }
+        Err(message) => {
+            app.mode = UiMode::operation_result(OperationResult::Error(message));
+        }
+    }
+}
+
+/// Open the Resolve review for `dispute_id` and check the escrow of its order
+/// in the background; the review shows the result as it arrives.
+pub(crate) fn open_finalization_review(
+    app: &mut AppState,
+    dispute_id: Uuid,
+    deps: &OrderInfoDeps<'_>,
+) {
+    app.mode = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+        dispute_id,
+        selected_button_index: 0,
+        bond: BondSlashChoice::None,
+        slash_submenu_open: false,
+        slash_submenu_index: 0,
+    });
+    let order_id = app
+        .admin_disputes_in_progress
+        .iter()
+        .find(|d| d.dispute_id == dispute_id.to_string())
+        .and_then(|d| Uuid::parse_str(&d.id).ok());
+    let Some(order_id) = order_id else {
+        app.finalization_order_check = None;
         return;
     };
+    let (seq, state) = match spawn_admin_order_info(app, order_id, deps) {
+        Ok(seq) => (seq, OrderCheckState::Loading),
+        Err(message) => (0, OrderCheckState::Failed(message)),
+    };
+    app.finalization_order_check = Some(FinalizationOrderCheck {
+        order_id,
+        seq,
+        state,
+    });
+}
+
+/// Start an `AdminOrderInfo` request without changing the UI mode. The reply
+/// arrives as [`OperationResult::AdminOrderInfo`] with the returned number.
+fn spawn_admin_order_info(
+    app: &mut AppState,
+    order_id: Uuid,
+    deps: &OrderInfoDeps<'_>,
+) -> Result<u64, String> {
+    let Some(admin_keys) = deps.admin_keys.cloned() else {
+        return Err("Admin private key not configured".to_string());
+    };
     let Ok(mostro_pubkey) = deps.current_mostro_pubkey.lock().map(|pk| *pk) else {
-        request_fatal_restart(
+        let message =
             "Mostrix encountered an internal error (poisoned Mostro pubkey lock). Please restart the app."
-                .to_string(),
-        );
-        return;
+                .to_string();
+        request_fatal_restart(message.clone());
+        return Err(message);
     };
     // Cached kind-38385 info carries the PoW the instance requires.
     let mostro_info: Option<MostroInstanceInfo> = app.mostro_info.clone();
 
     app.admin_order_info_seq = app.admin_order_info_seq.wrapping_add(1);
     let seq = app.admin_order_info_seq;
-    let return_to = Box::new(std::mem::replace(&mut app.mode, UiMode::Normal));
-    app.mode = UiMode::AdminMode(AdminMode::WaitingOrderInfo {
-        order_id,
-        seq,
-        return_to,
-    });
 
     let client = deps.client.clone();
     let result_tx = deps.order_result_tx.clone();
@@ -463,6 +511,7 @@ pub(crate) fn request_admin_order_info(
             result,
         });
     });
+    Ok(seq)
 }
 
 /// Helper function to execute adding a solver.

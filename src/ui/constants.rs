@@ -82,6 +82,8 @@ pub const HELP_CHAT_COPY_KEYS: &str =
 
 // Help popup lines (Disputes Pending)
 pub const HELP_DP_ENTER_TAKE: &str = "Enter: Take selected dispute";
+pub const HELP_DP_SHIFT_U_ORDER_STATE: &str =
+    "Shift+U: Check the order's real state before taking (read-only)";
 pub const HELP_DP_SELECT_DISPUTE: &str = "↑↓: Select dispute";
 
 // --- Serbero handoffs (Disputes Pending banner and tab badge) ---

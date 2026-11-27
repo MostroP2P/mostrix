@@ -27,6 +27,7 @@ Lists pending disputes on the Mostro network (state: `Initiated`, filtered via `
 
 - **View dispute details**: Dispute ID, status, and **Created** time — the kind-38386 open-time **tag** from Mostro's SQLite (`disputes.created_at`). Prefer `published_at` (current name; [mostro#1001](https://github.com/MostroP2P/mostro/pull/1001)), then the legacy `created_at` tag ([mostro#878](https://github.com/MostroP2P/mostro/pull/878), v0.18.5–rename), then Nostr `event.created_at` (last publish) when neither tag is usable. The Created column drops on narrow terminals.
 - **Take a dispute**: Select a dispute and press Enter to take ownership
+- **Check the order first**: **Shift+U** shows the real order state of the highlighted dispute before taking it (see [Checking the real order state](#checking-the-real-order-state-shiftu))
 - **Take over from Serbero**: **Ctrl+T** lists `in-progress` disputes Serbero wrote about (see [Taking over a dispute from Serbero](#taking-over-a-dispute-from-serbero-ctrlt))
 - **See Serbero handoffs**: when Serbero handed a dispute to a person, a yellow line above the table says so (see [Serbero handoffs at a glance](#serbero-handoffs-at-a-glance)) and the tab label reads `Disputes Pending 🙋 N` from any tab
 - **Navigate**: ↑↓ browse the list; selection is by dispute UUID (`selected_pending_dispute_id`), resolved through `selected_pending_dispute` / `move_pending_dispute_selection` in `src/ui/helpers/dispute_selection.rs`
@@ -421,6 +422,10 @@ The popup shows, in this order:
 4. **Payout to buyer**, **Bonds** and **Details** (amounts, fees, times, trade pubkeys).
 
 Database and Lightning values are shown side by side and never merged. **↑↓ / PgUp / PgDn** scroll, **Esc / Enter** close. **Esc** while waiting cancels the request; a late answer is then ignored.
+
+**Shift+U** also works on **Disputes Pending**, for the highlighted dispute, so you can check an order before taking it.
+
+**In the Resolve review**: opening it (**Shift+F** / **Ctrl+K → F**) sends the same query in the background, and the review shows a one-line **Mostro check** above the buttons, e.g. `✅ Mostro check: status dispute, hold invoice accepted (funds locked)`, or the most serious warning (`⛔ … escrow is not locked, so settling or canceling it will fail`). The same line is repeated in the Yes/No confirmation, right above YES. It never blocks the action: when the Lightning node is unavailable the check says so and the admin decides.
 
 ### Dispute Information Structure
 

@@ -293,6 +293,15 @@ fn apply_admin_order_info_result(
     order_id: uuid::Uuid,
     result: Result<Box<mostro_core::prelude::OrderInfo>, String>,
 ) {
+    if let Some(check) = app.finalization_order_check.as_mut() {
+        if check.seq == seq && check.order_id == order_id {
+            check.state = match result {
+                Ok(info) => crate::ui::order_info_popup::OrderCheckState::Ready(info),
+                Err(message) => crate::ui::order_info_popup::OrderCheckState::Failed(message),
+            };
+            return;
+        }
+    }
     let return_to = match &app.mode {
         UiMode::AdminMode(AdminMode::WaitingOrderInfo {
             order_id: waiting_id,
@@ -705,6 +714,46 @@ mod tests {
                 })
                 .map_err(str::to_string),
         }
+    }
+
+    #[test]
+    fn review_check_reply_is_stored_without_leaving_the_review() {
+        use crate::ui::order_info_popup::{FinalizationOrderCheck, OrderCheckState};
+        let mut app = AppState::new(UserRole::Admin);
+        let order_id = Uuid::from_u128(9);
+        let review = UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+            dispute_id: Uuid::from_u128(10),
+            selected_button_index: 1,
+            bond: crate::util::order_utils::BondSlashChoice::None,
+            slash_submenu_open: false,
+            slash_submenu_index: 0,
+        });
+        app.mode = review.clone();
+        app.finalization_order_check = Some(FinalizationOrderCheck {
+            order_id,
+            seq: 5,
+            state: OrderCheckState::Loading,
+        });
+
+        // An older request's reply is ignored.
+        handle_operation_result(order_info_reply(4, order_id, Err("old")), &mut app);
+        assert!(matches!(
+            app.finalization_order_check.as_ref().unwrap().state,
+            OrderCheckState::Loading
+        ));
+
+        handle_operation_result(order_info_reply(5, order_id, Ok(())), &mut app);
+        assert!(matches!(
+            app.finalization_order_check.as_ref().unwrap().state,
+            OrderCheckState::Ready(_)
+        ));
+        assert!(matches!(
+            app.mode,
+            UiMode::AdminMode(AdminMode::ReviewingDisputeForFinalization {
+                selected_button_index: 1,
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -429,6 +429,8 @@ pub struct AppState {
     /// Last `AdminOrderInfo` request number; replies carrying another number
     /// (cancelled or superseded requests) are dropped.
     pub admin_order_info_seq: u64,
+    /// Escrow check shown in the Resolve review (keyed by order id).
+    pub finalization_order_check: Option<crate::ui::order_info_popup::FinalizationOrderCheck>,
     /// Cached copy of currencies filter from settings (used for UI-side filtering).
     pub currencies_filter: Vec<String>,
     /// Orders-tab local filters, applied after the settings currency filter.
@@ -561,6 +563,7 @@ impl AppState {
             admin_keys: None,
             pending_admin_disputes_reload: false,
             admin_order_info_seq: 0,
+            finalization_order_check: None,
             currencies_filter: Vec::new(),
             order_filters: OrderBookFilters::default(),
             order_sort: OrderBookSort::default(),

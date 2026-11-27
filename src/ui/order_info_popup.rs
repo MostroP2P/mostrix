@@ -264,6 +264,84 @@ pub fn order_info_warnings(info: &OrderInfo) -> Vec<OrderInfoWarning> {
     out
 }
 
+/// Background `AdminOrderInfo` started when the Resolve review opens, so the
+/// admin sees the escrow state before paying the buyer or refunding the seller.
+#[derive(Debug, Clone)]
+pub struct FinalizationOrderCheck {
+    pub order_id: uuid::Uuid,
+    /// Request number; only the matching reply is stored.
+    pub seq: u64,
+    pub state: OrderCheckState,
+}
+
+#[derive(Debug, Clone)]
+pub enum OrderCheckState {
+    Loading,
+    Ready(Box<OrderInfo>),
+    Failed(String),
+}
+
+/// One-line "Mostro check" for the Resolve review and its confirm step: the
+/// most serious warning, or the escrow state when nothing is wrong.
+pub fn order_check_summary(state: &OrderCheckState) -> (String, Color) {
+    match state {
+        OrderCheckState::Loading => (
+            "Mostro check: asking for the real order state…".to_string(),
+            Color::Gray,
+        ),
+        OrderCheckState::Failed(message) => {
+            (format!("⚠ Mostro check failed: {message}"), Color::Yellow)
+        }
+        OrderCheckState::Ready(info) => {
+            let warnings = order_info_warnings(info);
+            let more = match warnings.len() {
+                0 | 1 => String::new(),
+                n => format!(" (+{} more)", n - 1),
+            };
+            if let Some(first) = warnings.first() {
+                let (icon, color) = match first.level {
+                    WarningLevel::Danger => ("⛔", Color::Red),
+                    WarningLevel::Caution => ("⚠", Color::Yellow),
+                    WarningLevel::Note => ("ℹ", Color::Cyan),
+                };
+                if first.level != WarningLevel::Note {
+                    return (format!("{icon} Mostro check: {}{more}", first.text), color);
+                }
+            }
+            let escrow = match (&info.hold_invoice, &info.cashu_escrow) {
+                (Some(hold), _) => format!("hold invoice {}", hold_invoice_label(hold.state).0),
+                (None, Some(_)) => "Cashu escrow".to_string(),
+                (None, None) => "no hold invoice".to_string(),
+            };
+            (
+                format!("✅ Mostro check: status {}, {escrow}{more}", info.status),
+                Color::Green,
+            )
+        }
+    }
+}
+
+/// The Resolve-review check for `order_id`, if one was started for it.
+pub fn order_check_for<'a>(
+    app: &'a crate::ui::AppState,
+    order_id: &str,
+) -> Option<&'a OrderCheckState> {
+    app.finalization_order_check
+        .as_ref()
+        .filter(|c| c.order_id.to_string() == order_id)
+        .map(|c| &c.state)
+}
+
+/// Wrapped one-line summary paragraph for the Resolve review and confirm step.
+pub fn order_check_paragraph(state: &OrderCheckState) -> Paragraph<'static> {
+    let (text, color) = order_check_summary(state);
+    Paragraph::new(Line::from(Span::styled(
+        text,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )))
+    .wrap(Wrap { trim: true })
+}
+
 fn warning_line(warning: &OrderInfoWarning) -> Line<'static> {
     let (icon, color) = match warning.level {
         WarningLevel::Danger => ("⛔", Color::Red),
@@ -785,6 +863,84 @@ mod tests {
         assert!(warnings[2]
             .text
             .contains("maker bond (700 sats) was slashed"));
+    }
+
+    #[test]
+    fn review_summary_names_the_worst_problem_or_the_escrow_state() {
+        let (text, color) = order_check_summary(&OrderCheckState::Loading);
+        assert!(text.contains("asking"));
+        assert_eq!(color, Color::Gray);
+
+        let (text, color) =
+            order_check_summary(&OrderCheckState::Failed("Mostro has no order".into()));
+        assert_eq!(text, "⚠ Mostro check failed: Mostro has no order");
+        assert_eq!(color, Color::Yellow);
+
+        let ok = with_hold("dispute", HoldInvoiceState::Accepted);
+        let (text, color) = order_check_summary(&OrderCheckState::Ready(Box::new(ok)));
+        assert_eq!(
+            text,
+            "✅ Mostro check: status dispute, hold invoice accepted (funds locked)"
+        );
+        assert_eq!(color, Color::Green);
+
+        // sample(): canceled hold invoice in dispute + failed payout + pending bond.
+        let (text, color) = order_check_summary(&OrderCheckState::Ready(Box::new(sample())));
+        assert!(
+            text.starts_with("⛔ Mostro check: Status is dispute"),
+            "{text}"
+        );
+        assert!(text.ends_with("(+2 more)"), "{text}");
+        assert_eq!(color, Color::Red);
+
+        // A note alone (pending bond payout) is not a problem: escrow state shown.
+        let mut noted = with_hold("dispute", HoldInvoiceState::Accepted);
+        noted.bonds = sample().bonds;
+        let (text, color) = order_check_summary(&OrderCheckState::Ready(Box::new(noted)));
+        assert!(text.starts_with("✅") && !text.contains("more"), "{text}");
+        assert_eq!(color, Color::Green);
+    }
+
+    #[test]
+    fn confirm_step_shows_the_mostro_check_above_yes_no() {
+        let order_id = Uuid::from_u128(77);
+        let dispute_id = Uuid::from_u128(78);
+        let mut app = crate::ui::AppState::new(crate::ui::UserRole::Admin);
+        app.admin_disputes_in_progress = vec![crate::models::AdminDispute {
+            id: order_id.to_string(),
+            dispute_id: dispute_id.to_string(),
+            ..Default::default()
+        }];
+        let mut bad = with_hold("dispute", HoldInvoiceState::Canceled);
+        bad.id = order_id;
+        app.finalization_order_check = Some(FinalizationOrderCheck {
+            order_id,
+            seq: 1,
+            state: OrderCheckState::Ready(Box::new(bad)),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|f| {
+                crate::ui::dispute_finalization_confirm::render_finalization_confirm(
+                    f,
+                    &app,
+                    &dispute_id,
+                    true,
+                    crate::util::order_utils::BondSlashChoice::None,
+                    true,
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut flat = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                flat.push_str(buf[(x, y)].symbol());
+            }
+            flat.push('\n');
+        }
+        assert!(flat.contains("Mostro check"), "{flat}");
+        assert!(flat.contains("YES") && flat.contains("NO"), "{flat}");
     }
 
     #[test]

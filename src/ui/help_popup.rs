@@ -149,16 +149,46 @@ pub fn render_help_popup(f: &mut ratatui::Frame, app: &AppState, tab: Tab) {
         let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true });
         f.render_widget(paragraph, inner);
     } else {
-        let content: Vec<Line> = plain_lines
+        // Close hint (and its spacer) take the last rows; trailing shortcuts give
+        // way to a "…" line on short terminals (AGENTS.md).
+        let close = Line::from(Span::styled(
+            HELP_CLOSE_HINT,
+            Style::default().fg(Color::DarkGray),
+        ));
+        let more = Line::from(Span::styled(
+            HELP_MORE_ON_TALLER_TERMINAL,
+            Style::default().fg(Color::DarkGray),
+        ));
+        let width = inner.width.max(1);
+        let rows = usize::from(inner.height);
+        let close_rows = wrapped_rows(&close, width);
+        let content: Vec<Line<'static>> = plain_lines
             .into_iter()
             .map(|s| Line::from(Span::styled(s, Style::default().fg(Color::White))))
             .collect();
-        let mut all = content;
-        all.push(Line::from(""));
-        all.push(Line::from(Span::styled(
-            HELP_CLOSE_HINT,
-            Style::default().fg(Color::DarkGray),
-        )));
+        let content_rows: usize = content.iter().map(|l| wrapped_rows(l, width)).sum();
+        let mut all = if content_rows + 1 + close_rows <= rows {
+            let mut all = content;
+            all.push(Line::from(""));
+            all
+        } else {
+            // Real shortcuts first; the "…" hint only if a row is left for it.
+            let budget = rows.saturating_sub(close_rows);
+            let mut used = 0;
+            let mut kept: Vec<Line<'static>> = content
+                .into_iter()
+                .take_while(|l| {
+                    used += wrapped_rows(l, width);
+                    used <= budget
+                })
+                .collect();
+            let kept_rows: usize = kept.iter().map(|l| wrapped_rows(l, width)).sum();
+            if kept_rows + wrapped_rows(&more, width) <= budget {
+                kept.push(more);
+            }
+            kept
+        };
+        all.push(close);
         let paragraph = Paragraph::new(all).wrap(Wrap { trim: true });
         f.render_widget(paragraph, inner);
     }
@@ -691,6 +721,7 @@ fn help_content(app: &AppState, tab: Tab) -> (String, Vec<String>) {
                 HELP_DP_ENTER_TAKE.to_string(),
                 HELP_DP_SELECT_DISPUTE.to_string(),
                 HELP_CTRL_T_TAKEOVER.to_string(),
+                HELP_DP_SHIFT_U_ORDER_STATE.to_string(),
             ],
         ),
         Tab::Admin(AdminTab::Observer) => (
